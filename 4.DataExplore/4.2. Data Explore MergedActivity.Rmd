@@ -1,0 +1,847 @@
+---
+title: "TFM: Análisis predictivo de incidentes navales en EEUU, 2002 - 2015"
+subtitle: "Anexo 4.2. Exploración de datos: MergedActivity"
+author: "Oscar Antón"
+date: "`r format(Sys.time(), '%B de %Y')`"
+output: 
+  html_document:
+    theme: cerulean
+    df_print: paged
+---
+
+```{=html}
+<!-- Texto justificado -->
+<style> body {text-align: justify} </style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+### Carga de librerías y datos
+
+```{r message=FALSE, warning=FALSE}
+# Librería                        # Propósito
+library(skimr)                    # Exploración estadística. Resumen
+library(PerformanceAnalytics)     # Exploración estadística. Análisis de correlaciones
+
+library(tidyverse)                # Sintaxis para el manejo de datos. Incluye dplyr, ggplot2, etc.
+library(data.table)               # Manejo eficiente de conjuntos de datos
+library(leaflet)                  # Representación geográfica
+
+```
+
+```{r}
+# Cargar el dataframe MergedActivity (solo incidentes)
+MergedActivity <- as.data.table(readRDS("../1.DataPreprocess/DataMergedActivity/MergedActivity.rds"))
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# Descripción estadística
+
+```{r}
+# Descripción de datos de incidentes
+skim(MergedActivity)
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 1. Características de los barcos
+
+## 1.1. Tipo de barco (vessel_class)
+
+```{r}
+# Gráfico de barras para barcos con incidente
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  group_by(vessel_class) %>%
+  summarise(frecuencia = n()) %>%
+  ggplot(aes(x = fct_reorder(vessel_class, frecuencia), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Tipo de barco", x = NULL, y = "Número de barcos involucrados en incidentes") +
+  theme_minimal() +
+  coord_flip()
+```
+
+## 1.2. Año de construcción (build_year)
+
+### 1.2.1. Construcción
+
+```{r}
+# Gráfico de barras por año de construcción para barcos con incidentes
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(build_year >= 1800 & build_year <= 2015) %>% 
+  ggplot(aes(x = as.numeric(build_year))) +
+  geom_histogram(binwidth = 1, fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Distribución de año de construcción", x = NULL, y = "Número de barcos involucrados en incidentes") +
+  theme_minimal()
+```
+
+### 1.2.2. Antiguedad en el accidente
+
+```{r}
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(age > 0, age < 120) %>% 
+  ggplot(aes(x = as.numeric(age))) +
+  geom_histogram(binwidth = 1, fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Antiguedad de barcos implicados en indicidentes", x = "Años", y = "Número de barcos") +
+  theme_minimal()
+```
+
+### 1.2.3. Valores anómalos en las fechas
+
+```{r}
+# Barcos con "antigüedad" negativa
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(build_year >= 1800 & build_year <= 2015) %>% 
+  mutate(antiguedad = year(as.Date(date)) - year(as.Date(paste0(build_year, "-01-01")))) %>% 
+  filter(antiguedad < 0) %>% 
+  select(vessel_id, vessel_name, imo_number, event_type, date, build_year, antiguedad) %>% 
+  knitr::kable("html")%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, font_size = 12)
+```
+
+Los incidentes con antigüedad -1, pueden darse durante las pruebas de mar o en la fase de construcción. Sin embargo, -7 o -2 son valores anómalos. Tras revisar datos, se comprueba que se trata de errores en build_year, que se van a corregir:
+
+```{r}
+MergedActivity$build_year[MergedActivity$vessel_id == "370425"] <- 1992
+
+MergedActivity$build_year[MergedActivity$vessel_id == "813316"] <- 2001
+
+MergedActivity$build_year[MergedActivity$vessel_id == "567313"] <- 2005
+
+MergedActivity$build_year[MergedActivity$vessel_id == "1229111"] <- 2005
+
+# Verificación
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(build_year >= 1800 & build_year <= 2015) %>% 
+  mutate(antiguedad = year(as.Date(date)) - year(as.Date(paste0(build_year, "-01-01")))) %>% 
+  filter(antiguedad < 0) %>% 
+  select(vessel_id, vessel_name, imo_number, event_type, date, build_year, antiguedad) %>% 
+  knitr::kable("html")%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, font_size = 12)
+```
+
+## 1.3. Volumen (gross_ton)
+
+```{r}
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(gross_ton >= 1 & gross_ton <= 250000) %>% 
+  ggplot(aes(x = gross_ton)) +
+  geom_density(fill = "#00bfc4", color = "#00bfc4", alpha = 0.9) +
+  facet_wrap(~cut(gross_ton, breaks = c(0, 1000, 250000), labels = c("1-1000", "1000-250000")), nrow = 2, scales = "free") +
+  labs(title = "Volumen (Gross Tonnage)", x = "Gross Tonnage", y = "Densidad") +
+  theme_minimal()
+```
+
+```{r}
+# Barcos con mayor Gross Tonnage
+MergedActivity %>% 
+  select(vessel_id, imo_number, vessel_name, build_year, gross_ton, length) %>% 
+  arrange(desc(gross_ton)) %>% 
+  unique() %>% 
+  head(10) %>% 
+  knitr::kable("html")%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, font_size = 12)
+```
+
+## 1.4. Eslora (length)
+
+```{r}
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(length >= 1 & length <= 1250) %>% 
+  ggplot(aes(x = length)) +
+  geom_density(fill = "#00bfc4", color = "#00bfc4", alpha = 0.9) +
+  facet_wrap(~cut(length, breaks = c(1, 250, 1250), labels = c("1-250", "250-1000")), nrow = 2, scales = "free") +
+  labs(title = "Gráficos de densidad para Eslora", x = "") +
+  theme_minimal()
+```
+
+```{r}
+# Barcos con mayor eslora
+MergedActivity %>% 
+  select(vessel_id, imo_number, vessel_name, build_year, gross_ton, length) %>% 
+  arrange(desc(length)) %>% 
+  unique() %>% 
+  head(10) %>% 
+  knitr::kable("html")%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, font_size = 12)
+```
+
+## 1.5. Bandera (flag_abbr)
+
+```{r}
+# Gráfico de barras con top10 banderas
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  group_by(flag_abbr) %>%
+  summarise(frecuencia = n()) %>%
+  arrange(desc(frecuencia)) %>% 
+  head(10) %>% 
+  ggplot(aes(x = fct_reorder(flag_abbr, frecuencia, desc), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Bandera (Todas)", x = "País", y = "Barcos implicados en indicidentes") +
+  theme_minimal()
+```
+
+```{r}
+# Gráfico de barras top10 sin bandera local (EEUU)
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(flag_abbr != "US") %>% 
+  group_by(flag_abbr) %>%
+  summarise(frecuencia = n()) %>%
+  arrange(desc(frecuencia)) %>% 
+  head(10) %>% 
+  ggplot(aes(x = fct_reorder(flag_abbr, frecuencia, desc), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Bandera (Extranjeras)", x = "País", y = "Barcos implicados en indicidentes") +
+  theme_minimal()
+```
+
+## 1.6. Sociedad de clasificación (classification_society)
+
+```{r}
+# Gráfico de barras horizontales para top10 sociedad de clasificación
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(classification_society != "UNSPECIFIED") %>% 
+  group_by(classification_society) %>%
+  summarise(frecuencia = n()) %>%
+  arrange(desc(frecuencia)) %>% 
+  head(10) %>% 
+  mutate(porcentaje = frecuencia / sum(frecuencia) * 100) %>% 
+  ggplot(aes(x = fct_reorder(classification_society, frecuencia), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje)), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  labs(title = "Reparto por sociedad de clasificación", x = NULL, y = "Número de barcos implicados en incidentes") +
+  theme_minimal() +
+  coord_flip()
+```
+
+## 1.7. Safety of Life at Sea, SOLAS (solas_desc)
+
+Adhesión al convenio Internacional para la Seguridad de la Vida Humana en el Mar
+
+```{r}
+# Gráfico de barras para SOLAS
+MergedActivity %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  group_by(solas_desc) %>%
+  summarise(frecuencia = n()) %>%
+  mutate(porcentaje = frecuencia / sum(frecuencia) * 100) %>% 
+  ggplot(aes(x = solas_desc, y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) + 
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje)), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  labs(title = "Adhesión a SOLAS", x = NULL, y = "Número de barcos implicados en incidentes") +
+  theme_minimal()
+```
+
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 2. Incidentes
+
+## 2.1 Tipo de incidente (envent_type)
+
+```{r}
+# Gráfico de barras
+MergedActivity %>% 
+  distinct(activity_id, .keep_all = TRUE) %>% 
+  group_by(event_type) %>%
+  summarise(frecuencia = n()) %>%
+  ggplot(aes(x = fct_reorder(event_type, frecuencia), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Frecuencia según tipo de evento", x = NULL, y = "Número de barcos implicados") +
+  theme_minimal() +
+  coord_flip()
+```
+
+## 2.2. Localización de incidentes (event_type)
+
+```{r}
+# Eventos más frecuentes
+top5MergedActivity <- MergedActivity %>%
+  distinct(activity_id, .keep_all = TRUE) %>% 
+  group_by(event_type) %>%
+  summarise(frecuencia = n()) %>%
+  arrange(desc(frecuencia)) %>%
+  head(5)
+
+# Paleta de colores
+pal <- colorFactor(
+  palette = c('red', 'purple', 'blue', 'orange', 'green'),
+  domain = top5MergedActivity$event_type
+)
+
+# Top5 MergedActivity
+MergedActivity %>%
+  filter(event_type %in% top5MergedActivity$event_type) %>% 
+  sample_frac(0.25) %>% 
+  # Representación sobre mapa 
+  leaflet() %>% 
+    setView(lng = -112, lat = 48, zoom = 3) %>%
+    addTiles() %>%
+    # Eventos
+    addCircleMarkers(lat =~latitude, lng =~longitude,
+      radius = 2,
+      popup=~paste("activity id:", activity_id, "<br>",
+                 "vessel_id:", vessel_id, "<br>",
+                 "date:", date, "<br>",
+                 "event_type:", event_type, "<br>",
+                 "watertype:", watertype, "<br>",
+                 "longitude:", longitude, "<br>",
+                 "latitude:", latitude, "<br>"
+                 ),
+      fillOpacity = 0.9,
+      color = ~pal(event_type),
+      stroke = FALSE
+    ) %>% 
+    # Legenda
+    addLegend(position = "topright",
+            colors = pal(top5MergedActivity$event_type),
+            labels = top5MergedActivity$event_type,
+            opacity = 0.5
+  )
+
+```
+
+## 2.3. Localización de incidentes (event_class)
+
+```{r}
+# Definir paleta de colores para cada zona
+pal <- colorFactor(
+  palette = c('red', 'purple', 'blue', 'orange', 'green', 'yellow'),
+  domain = MergedActivity$event_class
+)
+
+# Representación sobre mapa (15% de observaciones para facilitar la visualización)
+leaflet(data = MergedActivity %>% sample_frac(0.15)) %>% 
+  setView(lng = -112, lat = 48, zoom = 3) %>%
+  addTiles() %>%
+  # Color del área
+  addRectangles(-122, 49, -180, 70, fillColor = pal("Alaska"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  addRectangles(-45, 49, -122, 70, fillColor = pal("Canada"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  addRectangles(-45, 15, -81.5, 49, fillColor = pal("East Coast"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  addRectangles(-100, 15, -180, 49, fillColor = pal("West Coast"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  addRectangles(-81.5, 15, -100, 31, fillColor = pal("Gulf of Mexico"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  addRectangles(-81.5, 31, -100, 49, fillColor = pal("Mississippi"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  # Eventos
+  addCircleMarkers(lat =~latitude, lng =~longitude,
+    radius = 2,
+    popup=~paste("activity id:", activity_id, "<br>",
+                 "vessel_id:", vessel_id, "<br>",
+                 "date:", date, "<br>",
+                 "event_type:", event_type, "<br>",
+                 "watertype:", watertype, "<br>",
+                 "longitude:", longitude, "<br>",
+                 "latitude:", latitude, "<br>"
+                 ),
+    fillOpacity = 0.9,
+    color = ~pal(event_class),
+    stroke = FALSE
+  ) %>% 
+  # Legenda
+  addLegend(position = "topright",
+            colors = pal(sort(unique(MergedActivity$event_class))),
+            labels = sort(unique(MergedActivity$event_class)),
+            title = "Clase de incidente"
+  )
+```
+
+## 2.4. Evolución temporal (envent_type)
+
+```{r message=FALSE, warning=FALSE}
+# Se añade un alisado tipo Holt-Winters
+MergedActivity %>% 
+  distinct(activity_id, .keep_all = TRUE) %>% 
+  group_by(año = lubridate::year(date), mes = lubridate::month(date)) %>%
+  summarise(incidentes_mes = n()) %>%
+  mutate(Fecha = as.Date(paste(año, mes, "01", sep = "-"))) %>% 
+  mutate(incidentes_alisado = c(NA, HoltWinters(incidentes_mes, beta = FALSE, gamma = FALSE)$fitted[, "level"])) %>% 
+  arrange(año, mes) %>% 
+  ungroup() %>% 
+  ggplot() +
+  geom_line(aes(x = Fecha, y = incidentes_alisado, color = "Suavizado Holt-Winters")) +
+  geom_line(aes(x = Fecha, y = incidentes_mes, color = "Incidentes mensuales"), size = 1) +
+  scale_color_manual(values = c("Incidentes mensuales" = "#00bfc4", "Suavizado Holt-Winters" = "#f8766d"), guide = guide_legend(title = "Series:")) +
+  labs(title = "Evolución mensual de incidentes", x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "top", legend.justification = "left") 
+```
+
+## 2.5. Hora de los incidentes
+
+```{r}
+# Representación sencilla pero imprecisa
+MergedActivity %>% 
+  distinct(activity_id, .keep_all = TRUE) %>% 
+  mutate(hora = round(as.numeric(sub(":.*", "", hour)) + (as.numeric(sub(".*:", "", hour)) / 60), 2)) %>% 
+  ggplot(aes(x = hora)) +
+  geom_density(fill = "#00bfc4", color = "#00bfc4", alpha = 0.9) +
+  scale_x_continuous(labels = 0:24, breaks = 0:24) +
+  labs(title = "Distribución de incidentes por hora", y = "Densidad") +
+  theme_minimal()
+
+```
+
+
+```{r}
+# Teniendo en cuenta la "circularidad" de las horas
+# Código basado en el post https://stackoverflow.com/questions/48407745/density-plot-based-on-time-of-the-day
+datetimes = MergedActivity$hour %>%
+  lubridate::parse_date_time("%h:%M")
+times_in_decimal = lubridate::hour(datetimes) + lubridate::minute(datetimes) / 60
+times_in_radians = 2 * pi * (times_in_decimal / 24)
+
+# Estimación para ancho de banda
+basic_dens = density(times_in_radians, from = 0, to = 2 * pi)
+
+res = circular::density.circular(circular::circular(times_in_radians,
+                                                    type = "angle",
+                                                    units = "radians",
+                                                    rotation = "clock"),
+                                 kernel = "wrappednormal",
+                                 bw = basic_dens$bw)
+
+time_pdf = data.frame(time = as.numeric(24 * (2 * pi + res$x) / (2 * pi)), # Radianes a 24h
+                      likelihood = res$y)
+
+ggplot(time_pdf) +
+  geom_area(aes(x = time, y = likelihood), fill = "#00bfc4") +
+  scale_x_continuous("Hora", labels = 0:24, breaks = 0:24) +
+  scale_y_continuous("Probabilidad") +
+  theme_minimal()
+```
+
+## 2.6. Valoración económica
+
+```{r}
+# Top 10 incidentes con mayor perjuicio económico
+MergedActivity %>% 
+  distinct(activity_id, .keep_all = TRUE) %>% 
+  select(activity_id, vessel_name, event_type, damage_assessment) %>% 
+  arrange(desc(damage_assessment)) %>% 
+  mutate(damage_assessment = format(damage_assessment, scientific = FALSE)) %>% 
+  head(10) %>% 
+  knitr::kable("html")%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, font_size = 12)
+```
+
+## 2.7. Daños personales
+
+```{r}
+# Frecuencia de daños personales
+# Gráfico de barras para barcos con incidente
+MergedActivity %>% 
+  distinct(activity_id, .keep_all = TRUE) %>% 
+  filter(!is.na(casualty), casualty != "UNSPECIFIED") %>% 
+  group_by(casualty) %>%
+  summarise(frecuencia = n()) %>%
+  ggplot(aes(x = fct_reorder(casualty, frecuencia, desc), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Tipo de daño personal", x = NULL, y = "Número de incidentes") +
+  theme_minimal() 
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 3. Geografía
+
+## 3.1. Localización de regiones
+
+```{r}
+# Definir paleta de colores para cada zona
+pal <- colorFactor(
+  palette = c('red', 'purple', 'blue', 'orange', 'green', 'yellow'),
+  domain = MergedActivity$region
+)
+
+# Representación sobre mapa (15% de observaciones para facilitar la visualización)
+leaflet(data = MergedActivity %>% sample_frac(0.15)) %>% 
+  setView(lng = -112, lat = 48, zoom = 3) %>%
+  addTiles() %>%
+  # Color del área
+  addRectangles(-122, 49, -180, 70, fillColor = pal("Alaska"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  addRectangles(-45, 49, -122, 70, fillColor = pal("Canada"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  addRectangles(-45, 15, -81.5, 49, fillColor = pal("East Coast"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  addRectangles(-100, 15, -180, 49, fillColor = pal("West Coast"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  addRectangles(-81.5, 15, -100, 31, fillColor = pal("Gulf of Mexico"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  addRectangles(-81.5, 31, -100, 49, fillColor = pal("Mississippi"), fillOpacity = 0.1, stroke = FALSE) %>% 
+  # Eventos
+  addCircleMarkers(lat =~latitude, lng =~longitude,
+    radius = 2,
+    popup=~paste("activity id:", activity_id, "<br>",
+                 "vessel_id:", vessel_id, "<br>",
+                 "date:", date, "<br>",
+                 "event_type:", event_type, "<br>",
+                 "watertype:", watertype, "<br>",
+                 "longitude:", longitude, "<br>",
+                 "latitude:", latitude, "<br>"
+                 ),
+    fillOpacity = 0.9,
+    color = ~ifelse(watertype == "river", 'limegreen', pal(region)),
+    stroke = FALSE
+  ) %>% 
+  # Legenda
+  addLegend(position = "topright",
+            colors = pal(sort(unique(MergedActivity$region))),
+            labels = sort(unique(MergedActivity$region)),
+            title = "Región"
+  )
+```
+
+## 3.2. Eventos por región
+
+```{r}
+# Gráfico de barras
+MergedActivity %>% 
+  distinct(activity_id, .keep_all = TRUE) %>% 
+  group_by(region) %>%
+  summarise(frecuencia = n()) %>%
+  ggplot(aes(x = fct_reorder(region, frecuencia, desc), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Frecuencia de eventos por región", x = NULL, y = "Número de incidentes registrados") +
+  theme_minimal() 
+```
+
+# 3.3. Evento más común en cada región
+
+```{r}
+# Extracción del evento con mayor frecuencia en cada región
+MergedActivity %>% 
+  distinct(activity_id, .keep_all = TRUE) %>% 
+  group_by(region) %>%
+  mutate(num_sucesos_por_region = n()) %>%
+  mutate(suceso_mas_frecuente = event_type[which.max(n())]) %>% 
+  select(region, suceso_mas_frecuente, num_sucesos_por_region) %>% 
+  unique() %>% 
+  arrange(desc(num_sucesos_por_region)) %>% 
+  knitr::kable("html")%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, font_size = 12)
+```
+
+## 3.4. Bonus: Triángulo de las bermudas
+
+```{r}
+# Definir coordenadas de la zona
+triang_bermuda <- data.frame(
+  lng = c(-64, -80, -66),
+  lat = c(33, 26, 18)
+)
+
+# Representación sobre mapa (15% de observaciones para facilitar la visualización)
+leaflet(data = MergedActivity %>% sample_frac(0.15)) %>% 
+  setView(lng = -70, lat = 25, zoom = 4) %>%
+  addTiles() %>%
+  
+  addPolygons(data = triang_bermuda, lat = ~lat, lng = ~lng, fillColor = "orangered", stroke = FALSE) %>% 
+  # Eventos
+  addCircleMarkers(lat =~latitude, lng =~longitude,
+    radius = 2,
+    popup=~paste("activity id:", activity_id, "<br>",
+                 "vessel_id:", vessel_id, "<br>",
+                 "date:", date, "<br>",
+                 "event_type:", event_type, "<br>",
+                 "watertype:", watertype, "<br>",
+                 "longitude:", longitude, "<br>",
+                 "latitude:", latitude, "<br>"
+                 ),
+    fillOpacity = 0.9,
+    color = ~ifelse(watertype == "river", 'limegreen', pal(region)),
+    stroke = FALSE
+  ) %>% 
+  # Legenda
+  addLegend(position = "topright",
+            colors = "orangered",
+            labels = "",
+            title = "Triángulo de las Bermudas"
+  )
+```
+
+Nota: No se aprecia una mayor concentración de incidentes que otras zonas con distancias similares a la costa
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 4. Metereología
+
+## 4.1. Temperatura
+
+Mapa
+
+```{r}
+# Definir paleta de colores por intensidad
+pal <- colorFactor(
+  palette = c('blue', 'yellow','red'),
+  domain = sort(MergedActivity$air_temp)
+)
+
+# Representación sobre mapa (15% de observaciones para facilitar la visualización)
+leaflet(data = MergedActivity %>% sample_frac(0.15)) %>% 
+  setView(lng = -112, lat = 48, zoom = 3) %>%
+  addTiles() %>%
+  # Eventos
+  addCircleMarkers(lat =~latitude, lng =~longitude,
+    radius = 4,
+    popup=~paste("activity id:", activity_id, "<br>",
+                 "vessel_id:", vessel_id, "<br>",
+                 "date:", date, "<br>",
+                 "event_type:", event_type, "<br>",
+                 "watertype:", watertype, "<br>",
+                 "air_temp:", air_temp, "<br>",
+                 "longitude:", longitude, "<br>",
+                 "latitude:", latitude, "<br>"
+                 ),
+    fillOpacity = 0.4,
+    color = ~pal(air_temp),
+    stroke = FALSE
+  ) %>% 
+  # Legenda
+  addLegend(position = "topright",
+            colors = c('blue', 'yellow','red'),
+            labels = c("Baja", "Media", "Calida"),
+            title = "Temperatura"
+  )
+```
+
+Temperatura durante el año
+
+```{r}
+# Grafico de serie temporal de temperatura media mensual
+MergedActivity %>% 
+  distinct(activity_id, .keep_all = TRUE) %>% 
+  group_by(año = lubridate::year(date), mes = lubridate::month(date)) %>%
+  summarise(temperatura_mes = mean(air_temp, na.rm = TRUE)) %>%
+  mutate(Fecha = as.Date(paste(año, mes, "01", sep = "-"))) %>% 
+  arrange(año, mes) %>% 
+  ungroup() %>% 
+  ggplot() +
+  geom_line(aes(x = Fecha, y = temperatura_mes, color = "temperatura mensual (ºFahrenheit)"), size = 1) +
+  scale_color_manual(values = c("temperatura mensual (ºFahrenheit)" = "#00bfc4"), guide = guide_legend(title = "Serie:")) +
+  labs(title = "Evolución mensual de temperatura", x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "top", legend.justification = "left") 
+```
+
+
+## 4.2. Mapa de viento
+
+```{r}
+# Definir paleta de colores para cada zona
+pal <- colorFactor(
+  palette = c('blue', 'yellow','red'),
+  domain = sort(MergedActivity$wind_speed)
+)
+
+# Representación sobre mapa (15% de observaciones para facilitar la visualización)
+leaflet(data = MergedActivity %>% sample_frac(0.15)) %>% 
+  setView(lng = -112, lat = 48, zoom = 3) %>%
+  addTiles() %>%
+  # Eventos
+  addCircleMarkers(lat =~latitude, lng =~longitude,
+    radius = 4,
+    popup=~paste("activity id:", activity_id, "<br>",
+                 "vessel_id:", vessel_id, "<br>",
+                 "date:", date, "<br>",
+                 "event_type:", event_type, "<br>",
+                 "watertype:", watertype, "<br>",
+                 "longitude:", longitude, "<br>",
+                 "latitude:", latitude, "<br>"
+                 ),
+    fillOpacity = 0.4,
+    color = ~pal(wind_speed),
+    stroke = FALSE
+  ) %>% 
+  # Legenda
+  addLegend(position = "topright",
+            colors = c('blue', 'yellow','red'),
+            labels = c("Bajo", "Medio", "Alto"),
+            title = "Temperatura"
+  )
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 5. event_class / Variables explicativas
+
+## 5.1. Variables cuantitativas de características de los barcos
+
+```{r}
+# Boxplot de estas variables en un solo gráfico para una salida compacta
+MergedActivity %>% 
+  mutate(build_year = as.numeric(build_year)) %>% 
+  mutate(antiguedad = year(as.Date(date)) - year(as.Date(paste0(build_year, "-01-01")))) %>% 
+  filter(gross_ton < 1000, length < 250, antiguedad > 0, antiguedad < 50) %>% 
+  select(event_class, gross_ton, length, antiguedad) %>% 
+  pivot_longer(cols = -event_class, names_to = "variable", values_to = "valor") %>% 
+  ggplot(aes(y = valor, x = event_class, fill = variable)) +
+  geom_boxplot(varwidth = TRUE, color = "#00bfc4", alpha = 0.5) +
+  stat_summary(fun = mean, geom = "point", color = "#00bfc4", size = 3, alpha = 0.3) +
+  facet_wrap(~variable, scales = "free") +
+  theme(legend.position="none") +
+  labs(title = "Boxplots de características de los barcos") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## 5.2. Variables meteorológicas
+
+```{r}
+# Boxplot de estas variables en un solo gráfico para una salida compacta
+MergedActivity %>% 
+  mutate(build_year = as.numeric(build_year)) %>% 
+  select(event_class, air_temp, wind_speed, wave_hgt, visibility) %>% 
+  filter(air_temp > 0, wind_speed < 100, wave_hgt < 10, visibility > 96) %>% 
+  pivot_longer(cols = -event_class, names_to = "variable", values_to = "valor") %>% 
+  ggplot(aes(y = valor, x = event_class, fill = variable)) +
+  geom_boxplot(varwidth = TRUE, color = "#00bfc4", alpha = 0.5) +
+  stat_summary(fun = mean, geom = "point", color = "#00bfc4", size = 3, alpha = 0.3) +
+  facet_wrap(~variable, scales = "free") +
+  theme(legend.position="none") +
+  labs(title = "Boxplots de variables meteorológicas", y = NULL) +
+  coord_flip()
+```
+
+## 5.3. Clase de incidentes por región
+
+```{r}
+# Gráfico de barras apiladas
+MergedActivity  %>% 
+  group_by(region, event_class) %>%
+  summarise(frecuencia = n()) %>%
+  ggplot(aes(x = fct_reorder(region, frecuencia), y = frecuencia, fill = event_class)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  labs(title = "Clase de incidentes por región", x = NULL, y = NULL) +
+  theme_minimal()
+```
+
+### 5.X. Daños / Variables meteorológicas
+
+```{r}
+# Boxplots de variables meteorológicas
+# Filtrados para encuadrar los valores centrales
+MergedActivity %>% 
+  select(damage_status, air_temp, wind_speed, wave_hgt, visibility) %>% 
+  filter(damage_status == "Damaged" | damage_status == "Undamaged") %>% 
+  filter(air_temp > 0 & air_temp < 300) %>% 
+  filter(visibility > 95 & visibility < 98) %>% 
+  filter(wave_hgt > 0 & wave_hgt < 10) %>% 
+  filter(wind_speed > 15 & wind_speed < 85) %>% 
+  pivot_longer(cols = -damage_status, names_to = "variable", values_to = "valor") %>% 
+  ggplot(aes(y = valor, x = damage_status, fill = variable)) +
+  geom_boxplot(varwidth = TRUE, color = "#00bfc4", alpha = 0.3) +
+  stat_summary(fun = mean, geom = "point", color = "#00bfc4", size = 3, alpha = 0.3) +
+  facet_wrap(~variable, scales = "free") +
+  theme(legend.position="none") +
+  labs(title = "Boxplots de variables metereológicas")
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 6. Correlaciones
+
+```{r fig.height=10, fig.width=10, warning=FALSE}
+# Cuadro conjunto
+MergedActivity %>% 
+  sample_frac(0.3) %>% 
+  mutate(hour = round(as.numeric(sub(":.*", "", hour)) + (as.numeric(sub(".*:", "", hour)) / 60), 2)) %>% 
+  select(-activity_id, -date, -build_year, -vessel_id, -imo_number, -vessel_name) %>% 
+  mutate_at(vars(region, watertype, event_type, damage_status,
+                 vessel_class, flag_abbr, classification_society, solas_desc,
+                 casualty, pollution, event_class), factor ) %>% 
+  mutate_all(~as.integer(.)) %>% 
+  chart.Correlation(histogram = T, pch = 19)
+```
+
+Más en detalle:
+
+```{r message=FALSE, warning=FALSE}
+# Variables de localización y meteorología
+MergedActivity %>% 
+  sample_frac(0.5) %>% 
+  select(event_class, region, latitude, longitude, watertype, air_temp, wind_speed, wave_hgt, visibility) %>% 
+  mutate_at(vars(region, watertype, event_class), factor ) %>% 
+  mutate_all(~as.integer(.)) %>% 
+  chart.Correlation(histogram = T, pch = 19)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Características de barco
+MergedActivity %>% 
+  sample_frac(0.5) %>% 
+  mutate(antiguedad = year(as.Date(date)) - year(as.Date(paste0(build_year, "-01-01")))) %>% 
+  select(event_class, antiguedad, event_type, vessel_class, gross_ton, length, damage_status, flag_abbr, classification_society, solas_desc) %>% 
+  mutate_at(vars(event_type, damage_status, vessel_class, flag_abbr, classification_society, solas_desc, event_class), factor ) %>% 
+  mutate_all(~as.integer(.)) %>% 
+  chart.Correlation(histogram = T, pch = 19)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Incidentes
+MergedActivity %>% 
+  sample_frac(0.5) %>% 
+  mutate(hour = round(as.numeric(sub(":.*", "", hour)) + (as.numeric(sub(".*:", "", hour)) / 60), 2)) %>% 
+  select(event_class, event_type, hour, damage_status, damage_assessment, casualty, pollution) %>% 
+  mutate_at(vars(event_type, damage_status, casualty, pollution, event_class), factor ) %>% 
+  mutate_all(~as.integer(.)) %>% 
+  chart.Correlation(histogram = T, pch = 19)
+```
+
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+
+
+
+
+
+
+
+

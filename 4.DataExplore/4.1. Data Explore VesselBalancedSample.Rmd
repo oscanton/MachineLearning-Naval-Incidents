@@ -1,0 +1,429 @@
+---
+title: "TFM: Análisis predictivo de incidentes navales en EEUU, 2002 - 2015"
+subtitle: "Anexo 4.1. Exploración de datos: VesselBalancedSample"
+author: "Oscar Antón"
+date: "`r format(Sys.time(), '%B de %Y')`"
+output: 
+  html_document:
+    theme: cerulean
+    df_print: paged
+---
+
+```{=html}
+<!-- Texto justificado -->
+<style> body {text-align: justify} </style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+### Carga de librerías y datos
+
+```{r message=FALSE, warning=FALSE}
+# Librería                        # Propósito
+library(tidyverse)                # Sintaxis para el manejo de datos. Incluye dplyr, ggplot2, etc.
+library(data.table)               # Manejo eficiente de conjuntos de datos
+library(leaflet)                  # Representación geográfica
+
+library(skimr)                    # Exploración estadística. Resumen
+library(PerformanceAnalytics)     # Exploración estadística. Análisis de correlaciones
+```
+
+```{r}
+# Cargar el dataframe VesselBalancedSample (50% barcos con incidentes, 50% barcos sin incidentes)
+VesselBalancedSample <- as.data.table(readRDS("../1.DataPreprocess/DataMergedActivity/VesselBalancedSample.rds"))
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# Descripción estadística
+
+```{r}
+# Descripción de datos balanceados 
+skim(VesselBalancedSample)
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 1. Características de los barcos
+
+## 1.1. Tipo de barco (vessel_class)
+
+```{r}
+# Frecuencia por tipo de barco
+VesselBalancedSample %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  group_by(vessel_class) %>%
+  summarise(frecuencia = n()) %>%
+  ggplot(aes(x = fct_reorder(vessel_class, frecuencia), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Tipo de barco", x = NULL, y = "Número de barcos") +
+  theme_minimal() +
+  coord_flip()
+```
+
+## 1.2. Año de construcción (build_year)
+
+```{r}
+# Frecuencia por año de construcción
+VesselBalancedSample %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(build_year >= 1800 & build_year <= 2015) %>% 
+  ggplot(aes(x = as.numeric(build_year))) +
+  geom_histogram(binwidth = 1, fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Distribución de año de construcción", x = NULL, y = "Número de barcos") +
+  theme_minimal()
+```
+
+## 1.3. Volumen (gross_ton)
+
+```{r}
+# Gráficos de densidad por tramos para gross_ton
+VesselBalancedSample %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(gross_ton >= 1 & gross_ton <= 250000) %>% 
+  ggplot(aes(x = gross_ton)) +
+  geom_density(fill = "#00bfc4", color = "#00bfc4", alpha = 0.9) +
+  facet_wrap(~cut(gross_ton, breaks = c(0, 100, 1000, 50000, 250000), labels = c("1-100", "100-1000", "1000-50000", "50000-250000")), nrow = 2, scales = "free") +
+  labs(title = "Volumen (Gross Tonnage)", x = "Gross Tonnage", y = "Densidad") +
+  theme_minimal()
+```
+
+```{r}
+# Barcos con mayor Gross Tonnage
+VesselBalancedSample %>% 
+  select(vessel_id, imo_number, vessel_name, build_year, gross_ton, length) %>% 
+  arrange(desc(gross_ton)) %>% 
+  unique() %>% 
+  head(10) %>% 
+  knitr::kable("html")%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, font_size = 12)
+```
+
+## 1.4. Eslora (length)
+
+```{r}
+# Gráficos de densidad por tramos para length
+VesselBalancedSample %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(length >= 1 & length <= 1250) %>% 
+  ggplot(aes(x = length)) +
+  geom_density(fill = "#00bfc4", color = "#00bfc4", alpha = 0.9) +
+  facet_wrap(~cut(length, breaks = c(1, 250, 1250), labels = c("1-250", "250-1000")), nrow = 2, scales = "free") +
+  labs(title = "Eslora", x = "Pies", y = "Densidad") +
+  theme_minimal()
+```
+
+```{r}
+# Barcos con mayor eslora
+VesselBalancedSample %>% 
+  select(vessel_id, imo_number, vessel_name, build_year, gross_ton, length) %>% 
+  arrange(desc(length)) %>% 
+  unique() %>% 
+  head(10) %>% 
+  knitr::kable("html")%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"), full_width = F, font_size = 12)
+```
+
+## 1.5. Bandera (flag_abbr)
+
+```{r}
+# Gráfico de barras con top10 banderas
+VesselBalancedSample %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  group_by(flag_abbr) %>%
+  summarise(frecuencia = n()) %>%
+  arrange(desc(frecuencia)) %>% 
+  head(10) %>% 
+  ggplot(aes(x = fct_reorder(flag_abbr, frecuencia, desc), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Bandera (Todas)", x = "País", y = "Número de barcos") +
+  theme_minimal()
+```
+
+```{r}
+# Top 10 sin bandera local (EEUU)
+VesselBalancedSample %>% 
+  filter(flag_abbr != "US") %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  group_by(flag_abbr) %>%
+  summarise(frecuencia = n()) %>%
+  arrange(desc(frecuencia)) %>% 
+  head(10) %>% 
+  ggplot(aes(x = fct_reorder(flag_abbr, frecuencia, desc), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Bandera (Extranjeras)", x = "País", y = "Número de barcos") +
+  theme_minimal()
+```
+
+## 1.6. Sociedad de clasificación (classification_society)
+
+```{r}
+# Gráfico de barras horizontales para top10 sociedad de clasificación
+VesselBalancedSample %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(classification_society != "UNSPECIFIED") %>% 
+  group_by(classification_society) %>%
+  summarise(frecuencia = n()) %>%
+  arrange(desc(frecuencia)) %>% 
+  head(10) %>% 
+  mutate(porcentaje = frecuencia / sum(frecuencia) * 100) %>% 
+  ggplot(aes(x = fct_reorder(classification_society, frecuencia), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) + 
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje)), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  labs(title = "Reparto por sociedad de clasificación", x = NULL, y = "Número de barcos") +
+  theme_minimal() +
+  coord_flip()
+```
+## 1.7. Safety of Life at Sea, SOLAS (solas_desc)
+
+Adhesión al convenio Internacional para la Seguridad de la Vida Humana en el Mar
+
+```{r}
+# Gráfico de barras para SOLAS
+VesselBalancedSample %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  group_by(solas_desc) %>%
+  summarise(frecuencia = n()) %>% 
+  mutate(porcentaje = frecuencia / sum(frecuencia) * 100) %>%
+  ggplot(aes(x = solas_desc, y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) + 
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje)), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  labs(title = "Adhesión a SOLAS", x = NULL, y = "Número de barcos") +
+  theme_minimal()
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 2. Incidentes
+
+## 2.1 Tipo de incidente (event_type)
+
+```{r}
+# Gráfico de barras horizontales para event_type
+VesselBalancedSample %>% 
+  filter(event_type != "No event") %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  group_by(event_type) %>%
+  summarise(frecuencia = n()) %>%
+  arrange(desc(frecuencia)) %>% 
+  ggplot(aes(x = fct_reorder(event_type, frecuencia), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Incidentes", x = NULL, y = "Número de barcos involucrados") +
+  theme_minimal() +
+  coord_flip()
+```
+
+## 2.2. Daños (damage_status)
+
+```{r}
+# Gráfico de barras horizontales para damage_status
+VesselBalancedSample %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  group_by(damage_status) %>%
+  summarise(frecuencia = n()) %>%
+  ggplot(aes(x = fct_reorder(damage_status, frecuencia), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "#00bfc4", alpha = 0.9) +
+  labs(title = "Afección material", x = NULL, y = "Número de barcos") +
+  theme_minimal() +
+  coord_flip()
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 3. Involucración en accidente / Variables explicativas
+
+### 3.1. Involucración en accidente / Características del barco
+
+```{r}
+# Boxplots de variables no factoriales
+VesselBalancedSample %>% 
+  mutate(involved = as.factor(as.character(event_type != "No event"))) %>% 
+  mutate(build_year = as.numeric(build_year)) %>% 
+  filter(gross_ton < 400, length < 250, build_year > 1950) %>% 
+  select(involved, gross_ton, length, build_year) %>% 
+  pivot_longer(cols = -involved, names_to = "variable", values_to = "valor") %>% 
+  ggplot(aes(y = valor, x = involved, fill = variable)) +
+  geom_boxplot(varwidth = TRUE, color = "#00bfc4", alpha = 0.5) +
+  stat_summary(fun = mean, geom = "point", color = "#00bfc4", size = 3, alpha = 0.3) +
+  facet_wrap(~variable, scales = "free") +
+  theme(legend.position="none") +
+  labs(title = "Boxplots de variables cuantitativas")
+```
+
+```{r}
+# Frecuencia por año de construcción
+VesselBalancedSample %>% 
+  distinct(vessel_id, .keep_all = TRUE) %>% 
+  filter(build_year >= 1800 & build_year <= 2015) %>% 
+  mutate(involved = as.factor(as.character(event_type != "No event"))) %>% 
+  group_by(build_year, involved) %>%
+  summarise(frecuencia = n()) %>%
+  ggplot(aes(x = as.numeric(build_year), y = frecuencia, fill = involved)) +
+  geom_histogram(stat = "identity", alpha = 0.9) +
+  labs(title = "Involucración en incidentes según de año de construcción", x = NULL, y = "Número de barcos") +
+  theme_minimal()
+```
+
+### 3.2. Involucración en accidente / Tipo de barco
+
+```{r}
+# Gráfico de barras apiladas horizontales
+VesselBalancedSample %>% 
+  mutate(involved = as.factor(as.character(event_type != "No event"))) %>% 
+  group_by(vessel_class, involved) %>%
+  summarise(frecuencia = n()) %>%
+  ggplot(aes(x = fct_reorder(vessel_class, frecuencia), y = frecuencia, fill = involved)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  labs(title = "Involucración en incidentes según tipo de barco", x = NULL, y = NULL) +
+  theme_minimal() +
+  coord_flip()
+```
+
+### 3.3. Involucración en accidente / Bandera
+
+```{r}
+lump_factorials <- function(factor_var) {
+  fct_lump(factor_var, prop = 0.008, other_level = "otro")
+}
+
+# Gráfico de barras apiladas para todas las banderas
+VesselBalancedSample %>% 
+  mutate(involved = as.factor(as.character(event_type != "No event"))) %>% 
+  mutate(flag_abbr = lump_factorials(flag_abbr)) %>%    # Reducción de la variabilidad 
+  group_by(flag_abbr, involved) %>%
+  summarise(frecuencia = n()) %>%
+  ggplot(aes(x = fct_reorder(flag_abbr, frecuencia), y = frecuencia, fill = involved)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  #geom_text(aes(label = frecuencia), color = "white", position = position_stack(vjust = 0.5)) +
+  labs(title = "Involucración en incidentes según bandera (todas)", x = NULL, y = NULL) +
+  theme_minimal()
+```
+
+```{r}
+# Gráfico de barras apiladas para banderas extranjeras
+VesselBalancedSample %>% 
+  mutate(involved = as.factor(as.character(event_type != "No event"))) %>% 
+  mutate(flag_abbr = lump_factorials(flag_abbr)) %>%    # Reducción de la variabilidad 
+  filter(flag_abbr != "US", flag_abbr != "otro" ) %>% 
+  group_by(flag_abbr, involved) %>%
+  summarise(frecuencia = n()) %>% 
+  mutate(porcentaje = frecuencia / sum(frecuencia) * 100) %>% 
+  ggplot(aes(x = fct_reorder(flag_abbr, frecuencia), y = frecuencia, fill = involved)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje)), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  labs(title = "Involucración en incidentes según bandera (todas)", x = NULL, y = NULL) +
+  theme_minimal()
+```
+
+### 3.4. Involucración en accidente / Sociedad de clasificación
+
+```{r}
+# Gráfico de barras apiladas horizontales
+VesselBalancedSample %>% 
+  filter(classification_society != "UNSPECIFIED") %>% 
+  mutate(involved = as.factor(as.character(event_type != "No event"))) %>% 
+  mutate(classification_society = lump_factorials(classification_society)) %>%    # Reducción de la variabilidad 
+  group_by(classification_society, involved) %>%
+  summarise(frecuencia = n()) %>%
+  mutate(porcentaje = frecuencia / sum(frecuencia) * 100) %>% 
+  ggplot(aes(x = fct_reorder(classification_society, frecuencia), y = frecuencia, fill = involved)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje)), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  labs(title = "Sociedad de clasificación según involucración en incidentes", x = NULL, y = NULL) +
+  theme_minimal() +
+  coord_flip()
+```
+
+### 3.5. Involucración en accidente / SOLAS
+
+```{r}
+# Gráfico de barras apiladas para adhesión a SOLAS
+VesselBalancedSample %>% 
+  mutate(involved = as.factor(as.character(event_type != "No event"))) %>% 
+  group_by(solas_desc, involved) %>%
+  summarise(frecuencia = n()) %>% 
+  mutate(porcentaje = frecuencia / sum(frecuencia) * 100) %>% 
+  ggplot(aes(x = fct_reorder(solas_desc, frecuencia), y = frecuencia, fill = involved)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje)), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  labs(title = "Involucración en incidentes según adhesión a SOLAS", x = NULL, y = NULL) +
+  theme_minimal()
+```
+
+### 3.6. Involucración en accidente / Daño
+
+```{r}
+# Gráfico de barras apiladas para adhesión a SOLAS
+VesselBalancedSample %>% 
+  mutate(involved = as.factor(as.character(event_type != "No event"))) %>% 
+  group_by(damage_status, involved) %>%
+  summarise(frecuencia = n()) %>% 
+  mutate(porcentaje = frecuencia / sum(frecuencia) * 100) %>% 
+  ggplot(aes(x = fct_reorder(damage_status, frecuencia), y = frecuencia, fill = involved)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje)), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  labs(title = "Involucración en incidentes según daño", x = NULL, y = NULL) +
+  theme_minimal() +
+  coord_flip()
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 4. Correlaciones
+
+```{r warning=FALSE}
+VesselBalancedSample %>% 
+  select(-vessel_id, -imo_number, -vessel_name) %>% 
+  mutate_at(vars(vessel_class, flag_abbr, classification_society, solas_desc, event_type, damage_status), factor) %>% 
+  mutate_all(~as.integer(.)) %>% 
+  chart.Correlation(histogram = T, pch = 19)
+```
+
+Hay correlaciones destacadas entre:
+
+· *length* y *gross_ton* (mayor eslora, implica mayor volumen)
+
+· *classification_society* y *solas_desc* Normalmente, lo barcos con mayor volumen están obligados a atenerse a ambas cuestiones
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+
+
+
+
+
+

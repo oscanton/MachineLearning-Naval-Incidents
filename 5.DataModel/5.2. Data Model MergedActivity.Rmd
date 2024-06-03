@@ -1,0 +1,1321 @@
+---
+title: "TFM: Análisis predictivo de incidentes navales en EEUU, 2002 - 2015"
+subtitle: "Anexo 5.2. Modelado: MergedActivity"
+author: "Oscar Antón"
+date: "`r format(Sys.time(), '%B de %Y')`"
+output: 
+  html_document:
+    theme: cerulean
+    df_print: paged
+---
+
+```{=html}
+<!-- Texto justificado -->
+<style> body {text-align: justify} </style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+### Carga de librerías, funciones y datos
+
+```{r message=FALSE, warning=FALSE}
+# Librería                        # Propósito
+library(MASS)                     # Regresión ordinal
+library(nnet)                     # Regresión multinomial
+library(sampling)                 # Equilibrado de muestra. Método del cubo.
+library(DMwR)                     # Equilibrado de muestra. Método Smote.
+library(mice)                     # Imputación de valores ausentes.
+library(arulesCBA)                # Discretización de variables (Redes bayesianas)
+library(fastDummies)              # Variables Dummy (One hot encoding)
+
+library(caret)                    # Modelos de machine Learning
+library(keras)                    # API para redes neuronales
+library(MLmetrics)                # Metricas en caret para variables multiclase (>2)
+library(gbm)                      # Manejo de modelos Gradient Boosting. Debido a error varImp()
+library(pROC)                     # Performance de modelos (curva ROC)
+library(h2o)                      # Machine learning framework (Java)
+library(doParallel)               # Cómputo multihilo
+library(tictoc)                   # Benchmarking (tiempo de cómputo)
+
+library(DALEX)                    # Interpretabilidad de modelos ML
+library(iBreakDown)               # Explicatividad local
+library(modelStudio)              # Análisis interactivo de explicabilidad
+
+library(gridExtra)                # Manejo de gráficos
+library(kableExtra)               # Formato de tablas
+library(formattable)              # Formato de tablas
+library(ggpubr)                   # Visualización de datos (ggarrange)
+library(data.table)
+library(tidyverse)                # Sintaxis para el manejo de datos. Incluye dplyr, ggplot2, etc.
+
+source("myCustomFunctions.R")
+```
+
+```{r}
+# Cargar el dataframe MergedActivity (100% incidentes)
+# Se lee como dataframe en vez de como datatable para evitar errores
+MergedActivity <- as.data.frame(readRDS("../1.DataPreprocess/DataMergedActivity/MergedActivity.rds"))
+```
+
+Switches
+
+```{r}
+# Guardar datos o no
+save_switch <- 0
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 1. Creación de datasets para los modelos
+
+## 1.1. Dataset con variables numéricas y factor (General)
+
+· Criba de variables
+
+· Creación de la variable objetivo: “y” (categoría de incidente). Será la última variable del dataset
+
+· Reducción de variabilidad en variables categóricas
+
+· Escalado para variables numéricas
+
+```{r}
+# Adaptación de variables:
+#  Obviar variables identificativas y de localización
+#  Obviar otras variables con información no relevante para el análisis predictivo
+#  Renombrado
+#  Conversión de variables de fecha, hora y año a valores continuos
+#  Reducir variabilidad de ciertas variables discretas (lump_factorials)
+#  Convertir a factor el resto de variables discretas
+#  Se escalarán las variables numéricas después del equilibrado e imputación de NAs, no ahora. 
+
+MergedActivity <- MergedActivity %>% 
+  select(-vessel_id, -imo_number, -vessel_name) %>% 
+  select(-event_type, -build_year, -wave_hgt, -visibility, -casualty, -pollution) %>% 
+  select(-flag_abbr, -classification_society, -solas_desc) %>% 
+  
+  rename(vessel_length = length) %>% 
+  rename(y = event_class) %>% 
+  
+  mutate(date = yday(as.Date(date))) %>% 
+  mutate(hour = round(as.numeric(sub(":.*", "", hour)) + (as.numeric(sub(".*:", "", hour)) / 60), 2)) %>%  
+
+  mutate_at(vars(vessel_class), lump_factorials) %>% 
+  
+  mutate_at(vars(region, watertype, damage_status, y), factor)
+
+# Visualización de la estructura
+str(MergedActivity)
+```
+
+### 1.1.1. Equilibrado de variable objetivo
+
+```{r}
+# Verificación del equilibrado de la muestra
+table(MergedActivity$y)
+```
+
+A efectos del análisis predictivo, se van a balancear los niveles de la variable objetivo a 9000 observaciones por nivel.
+
+· Submuestreos (Cube) para: Critical Events, Maritime Accidents, Material Issues
+
+· Sobremuestreos (smote) para: Onboard Emergencies, Third-party Damages
+
+```{r}
+# Tamaño de la muestra a la que queremos llegar en cada nivel
+n = 9000
+```
+
+#### Submuestreos: Método del cubo
+
+Variables significativas
+
+```{r}
+# También para una regresión ordinal
+if (save_switch  == 1) {
+# Establecemos un modelo de regresión ordinal para "y" puesto que se puede establecer un orden en sus valores
+multi_model <- multinom(y ~ ., na.omit(MergedActivity), Hess = TRUE)
+# Modelo de selección de variables por pasos con el criterio de Información de Akaike
+multi_model_stp <- stepAIC(multi_model, direction = "both")
+# Guardado
+saveRDS(multi_model , "Models/multi_model.RDS")
+saveRDS(multi_model_stp , "Models/multi_model_stp.RDS")
+}else{
+  multi_model_stp <- readRDS("Models/multi_model_stp.rds")
+}
+# Resultados. Variables relevantes en el modelo
+multi_model_stp$terms[[3]]
+```
+
+Submuestreo en Critical Events
+
+```{r}
+# Se eliminarán observaciones con NA
+CriticalEvents <- MergedActivity %>% 
+  filter(y == "Critical Events") %>% 
+  filter(complete.cases(.)) %>% 
+  mutate(across(where(is.factor), droplevels))
+```
+
+```{r}
+# Para comprobar la estimación del tamaño poblacional,
+# creamos un vector de "1" de dimensión = número de observaciones del nivel predominante
+UNO = rep(1, nrow(CriticalEvents))
+
+# Se necesita que todas las variables sean numéricas
+# Variables cuantitativas
+X1 <- CriticalEvents %>% 
+   select(activity_id, hour, longitude, age, gross_ton, vessel_length, air_temp, wind_speed)
+
+# Variables cualitativas: One hot encoding
+X2 <- disjunctive(CriticalEvents$region)
+colnames(X2) <- levels(CriticalEvents$region)
+
+X3 <- disjunctive(CriticalEvents$watertype)
+colnames(X3) <- levels(CriticalEvents$watertype)
+
+X4 <- disjunctive(CriticalEvents$vessel_class)
+colnames(X4) <- levels(CriticalEvents$vessel_class)
+
+X5 <- disjunctive(CriticalEvents$damage_status)
+colnames(X5) <- levels(CriticalEvents$damage_status)
+
+# Juntamos todo para formar la matriz de diseño
+X = as.matrix(cbind(UNO, X1, X2, X3, X4, X5))
+
+# Probabilidades de inclusión
+pik = rep(n / nrow(CriticalEvents), nrow(CriticalEvents))
+
+# Obtención de los índices de la nueva muestra con ayuda de la librería sampling
+# method = 2 para fase de aterrizaje mediante supresión de variables
+# order = 1 para que los datos sean ordenados aleatoriamente
+set.seed(123)
+indicemuestreo = samplecube(X, pik, method = 2, order = 1, comment = FALSE )
+
+# Obtención de la submuestra
+CriticalEvents_cube <- CriticalEvents[which(indicemuestreo == 1),]
+
+# Comprobación del tamaño
+cat('El tamaño de la submuestra con y = Critical Events, es:', dim(CriticalEvents_cube))
+```
+
+Submuestreo en Maritime Accidents
+
+```{r}
+# Se eliminarán observaciones con NA
+MaritimeAccidents <- MergedActivity %>% 
+  filter(y == "Maritime Accidents") %>% 
+  filter(complete.cases(.)) %>% 
+  mutate(across(where(is.factor), droplevels))
+```
+
+```{r}
+# Para comprobar la estimación del tamaño poblacional,
+# creamos un vector de "1" de dimensión = número de observaciones del nivel predominante
+UNO = rep(1, nrow(MaritimeAccidents))
+
+# Se necesita que todas las variables sean numéricas
+# Variables cuantitativas
+X1 <- MaritimeAccidents %>% 
+   select(activity_id, hour, longitude, age, gross_ton, vessel_length, air_temp, wind_speed)
+
+# Variables cualitativas: One hot encoding
+X2 <- disjunctive(MaritimeAccidents$region)
+colnames(X2) <- levels(MaritimeAccidents$region)
+
+X3 <- disjunctive(MaritimeAccidents$watertype)
+colnames(X3) <- levels(MaritimeAccidents$watertype)
+
+X4 <- disjunctive(MaritimeAccidents$vessel_class)
+colnames(X4) <- levels(MaritimeAccidents$vessel_class)
+
+X5 <- disjunctive(MaritimeAccidents$damage_status)
+colnames(X5) <- levels(MaritimeAccidents$damage_status)
+
+# Juntamos todo para formar la matriz de diseño
+X = as.matrix(cbind(UNO, X1, X2, X3, X4, X5))
+
+# Probabilidades de inclusión
+pik = rep(n / nrow(MaritimeAccidents), nrow(MaritimeAccidents))
+
+# Obtención de los índices de la nueva muestra con ayuda de la librería sampling
+# method = 2 para fase de aterrizaje mediante supresión de variables
+# order = 1 para que los datos sean ordenados aleatoriamente
+set.seed(123)
+indicemuestreo = samplecube(X, pik, method = 2, order = 1, comment = FALSE )
+
+# Obtención de la submuestra
+MaritimeAccidents_cube <- MaritimeAccidents[which(indicemuestreo == 1),]
+
+# Comprobación del tamaño
+cat('El tamaño de la submuestra con y = Maritime Accidents, es:', dim(MaritimeAccidents_cube))
+```
+
+Material Issues
+
+```{r}
+# Se eliminarán observaciones con NA
+MaterialIssues <- MergedActivity %>% 
+  filter(y == "Material Issues") %>% 
+  filter(complete.cases(.)) %>% 
+  mutate(across(where(is.factor), droplevels))
+```
+
+```{r}
+# Para comprobar la estimación del tamaño poblacional,
+# creamos un vector de "1" de dimensión = número de observaciones del nivel predominante
+UNO = rep(1, nrow(MaterialIssues))
+
+# Se necesita que todas las variables sean numéricas
+# Variables cuantitativas
+X1 <- MaterialIssues %>% 
+   select(activity_id, hour, longitude, age, gross_ton, vessel_length, air_temp, wind_speed)
+
+# Variables cualitativas: One hot encoding
+X2 <- disjunctive(MaterialIssues$region)
+colnames(X2) <- levels(MaterialIssues$region)
+
+X3 <- disjunctive(MaterialIssues$watertype)
+colnames(X3) <- levels(MaterialIssues$watertype)
+
+X4 <- disjunctive(MaterialIssues$vessel_class)
+colnames(X4) <- levels(MaterialIssues$vessel_class)
+
+X5 <- disjunctive(MaterialIssues$damage_status)
+colnames(X5) <- levels(MaterialIssues$damage_status)
+
+# Juntamos todo para formar la matriz de diseño
+X = as.matrix(cbind(UNO, X1, X2, X3, X4, X5))
+
+# Probabilidades de inclusión
+pik = rep(n / nrow(MaterialIssues), nrow(MaterialIssues))
+
+# Obtención de los índices de la nueva muestra con ayuda de la librería sampling
+# method = 2 para fase de aterrizaje mediante supresión de variables
+# order = 1 para que los datos sean ordenados aleatoriamente
+set.seed(123)
+indicemuestreo = samplecube(X, pik, method = 2, order = 1, comment = FALSE )
+
+# Obtención de la submuestra
+MaterialIssues_cube <- MaterialIssues[which(indicemuestreo == 1),]
+
+# Comprobación del tamaño
+cat('El tamaño de la submuestra con y = Material Issues, es:', dim(MaterialIssues_cube))
+```
+
+#### Sobremuestreos: Smote
+
+Onboard Emergencies
+
+```{r}
+OnboardEmergencies <- MergedActivity %>% 
+  filter(y == "Onboard Emergencies") 
+```
+
+```{r}
+# Observaciones a generar
+ngenerar <- n - nrow(OnboardEmergencies)
+
+# Porcentaje de muestra sintética o sobremuestreada
+p_over <- ngenerar / nrow(OnboardEmergencies) * 100
+
+# Muestra provisional: Se juntan con el resto de subconjuntos anteriormente nivelados.
+# Se eliminan niveles no presentes
+# La variable objetivo debe ser de tipo factor
+# Las variables numéricas deben estar sin atributos de escalado
+muestra_provisional <- rbind(CriticalEvents, MaritimeAccidents_cube, MaterialIssues_cube, OnboardEmergencies) %>% 
+  mutate(across(where(is.factor), droplevels))
+
+
+# Obtención de la muestra sintética con la librería DMwR
+OnboardEmergencies_smote <- SMOTE(y ~ ., data = muestra_provisional, perc.over = p_over, perc.under = 0)
+
+# Comprobación del tamaño
+cat('El tamaño de la submuestra con y = Onboard Emergencies, es:', dim(OnboardEmergencies_smote))
+```
+
+Third-party Damages
+
+```{r}
+ThirdpartyDamages <- MergedActivity %>% 
+  filter(y == "Third-party Damages") 
+```
+
+```{r}
+ngenerar <- n - nrow(ThirdpartyDamages)
+
+# Porcentaje de muestra sintética o sobremuestreada
+p_over <- ngenerar / nrow(ThirdpartyDamages) * 100
+
+# Muestra provisional: Se juntan con el resto de subconjuntos anteriormente nivelados.
+# Se eliminan niveles no presentes
+# La variable objetivo debe ser de tipo factor
+# Las variables numéricas deben estar sin atributos de escalado
+muestra_provisional <- rbind(CriticalEvents, MaritimeAccidents_cube, MaterialIssues_cube, ThirdpartyDamages) %>% 
+  mutate(across(where(is.factor), droplevels))
+
+
+# Obtención de la muestra sintética con la librería DMwR
+ThirdpartyDamages_smote <- SMOTE(y ~ ., data = muestra_provisional, perc.over = p_over, perc.under = 0)
+
+# Comprobación del tamaño
+cat('El tamaño de la submuestra con y = Third-Party Damages, es:', dim(ThirdpartyDamages_smote))
+```
+
+#### Unión de datos
+
+```{r}
+# Unión de los subconjuntos
+MergedActivityBalanced <- bind_rows(
+   CriticalEvents_cube,
+   MaritimeAccidents_cube,
+   MaterialIssues_cube,
+   OnboardEmergencies_smote,
+   ThirdpartyDamages_smote)
+
+# Estructura
+str(MergedActivityBalanced)
+```
+
+### 1.1.2. Imputación de valores ausentes
+
+```{r}
+# Con ayuda de la librería mice, se van a aplicar los métodos Cart y Random forest.
+# Se aplican 5 x 5 iteraciones a las tres variables con NA: air_temp, wind_speed y damage_assessment
+if (save_switch  == 1) {
+MergedActivityBalancedCart <- MergedActivityBalanced %>% 
+  mice(method = "cart", minbucket = 4) %>% 
+  complete() %>% 
+  as.data.frame()
+
+MergedActivityBalancedRF <- MergedActivityBalanced %>% 
+  mice(method = "rf", ntree = 3) %>% 
+  complete() %>% 
+  as.data.frame()
+
+# Guardado junto 
+loggedsave(MergedActivityBalancedCart, "Datasets")
+loggedsave(MergedActivityBalancedRF, "Datasets")
+}else{
+    MergedActivityBalancedCart <- readRDS("Datasets/MergedActivityBalancedCart.rds")
+    MergedActivityBalancedRF <- readRDS("Datasets/MergedActivityBalancedRF.rds")
+}
+```
+
+Comparación
+
+```{r}
+# Tabla con las medias de las variables imputadas junto con una columna de diferencias en valor absoluto
+bind_rows(
+    summarise(MergedActivityBalanced,
+              Dataset = "MergedActivityBalanced (Original)",
+              mean_air_temp = mean(air_temp, na.rm = TRUE),
+              mean_wind_speed = mean(wind_speed, na.rm = TRUE),
+              mean_damage_assessment = mean(damage_assessment, na.rm = TRUE)),
+    summarise(MergedActivityBalancedCart,
+              Dataset = "MergedActivityBalancedCart",
+              mean_air_temp = mean(air_temp),
+              mean_wind_speed = mean(wind_speed),
+              mean_damage_assessment = mean(damage_assessment)),
+    summarise(MergedActivityBalancedRF,
+              Dataset = "MergedActivityBalancedRF",
+              mean_air_temp = mean(air_temp),
+              mean_wind_speed = mean(wind_speed),
+              mean_damage_assessment = mean(damage_assessment)),
+) %>%
+  mutate(suma = mean_air_temp + mean_wind_speed + mean_damage_assessment) %>% 
+  mutate(dif_total = abs(suma - suma[1])) %>% 
+  mutate(dif_total = color_tile("lightgreen", "white")(dif_total)) %>% 
+  select(-suma) %>% 
+  kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>% 
+  add_header_above(c("", "Comparación de medias"= 4))
+```
+
+Teniendo en cuenta las medias, la opción que minimiza las diferencias es el método Cart
+
+### 1.1.3. Consolidación de datos
+
+```{r}
+# Elección del dataframe completo.
+# Filtrado de variables estadisticamente irrelevantes según regresión
+# Se escalan variables numéricas
+# Se cambian las etiquetas de la variable objetivo para evitar problemas en caret
+if (save_switch  == 1) {
+ MergedActivityGeneral <- MergedActivityBalancedCart %>% 
+   select(-date, -latitude, -damage_assessment) %>% 
+   mutate_if(is.numeric, scale) %>% 
+   mutate(y = factor(y, labels = make.names(levels(y))))
+
+loggedsave(MergedActivityGeneral, "Datasets")
+}else{
+ MergedActivityGeneral <- readRDS("Datasets/MergedActivityGeneral.rds")
+}
+
+str(MergedActivityGeneral)
+```
+
+## 1.2. Dataset con variables factor (Redes bayesianas)
+
+```{r}
+# Aplicación del método mdlp con ayuda de la librería arulesCBA para discretizar las variables factoriales
+MergedActivityFactor <- discretizeDF.supervised(y ~ ., MergedActivityGeneral)
+```
+
+```{r}
+# Guardado de datos
+if (save_switch  == 1) {
+loggedsave(MergedActivityFactor, "Datasets")
+}else{
+   MergedActivityFactor <- readRDS("Datasets/MergedActivityFactor.rds")
+}
+```
+
+```{r}
+# Verificación de estructura
+str(MergedActivityFactor)
+```
+
+## 1.3. Dataset con variables numéricas (Gradient Boosting)
+
+```{r}
+# Creamos variables dummy con la ayuda de la librería fastDummies y juntamos con las variables numéricas
+# Pero la  variable objetivo se queda como factor para utilizarse en modelos de clasificación
+MergedActivityNum <- cbind(
+  dummy_cols(MergedActivityGeneral[ , c(3, 5,6,7)], remove_selected_columns = TRUE),
+  MergedActivityGeneral[ ,c(1,2, 4, 8,9,10,11,12,13)]
+)
+```
+
+```{r}
+# Guardado de datos
+if (save_switch  == 1) {
+loggedsave(MergedActivityNum, "Datasets")
+}else{
+   MergedActivityNum <- readRDS("Datasets/MergedActivityNum.rds")
+}
+```
+
+```{r}
+# Verificación de estructura
+str(MergedActivityNum)
+```
+
+## 1.4. Particionado de datos
+
+```{r}
+# Índice de partición
+Indice_Particion <- createDataPartition(MergedActivityGeneral$y, p = 0.80, list = FALSE )
+
+# Muestras de entrenamiento y test para propósito general
+train_MA_general <- MergedActivityGeneral[Indice_Particion, ]
+test_MA_general <- MergedActivityGeneral[-Indice_Particion, ]
+
+# Muestras de entrenamiento y test para redes bayesanas
+train_MA_factor <- MergedActivityFactor[Indice_Particion, ]
+test_MA_factor <- MergedActivityFactor[-Indice_Particion, ]
+
+# Muestras de entrenamiento y test para Gradient Boosting
+train_MA_num <- MergedActivityNum[ Indice_Particion, ]
+test_MA_num <- MergedActivityNum[ -Indice_Particion, ]
+```
+
+```{r}
+# Guardado de datos
+if (save_switch  == 1) {
+datasets_MA_particionados <- list(train_MA_general = train_MA_general,
+                               test_MA_general = test_MA_general,
+                               train_MA_factor = train_MA_factor,
+                               test_MA_factor = test_MA_factor,
+                               train_MA_num = train_MA_num,
+                               test_MA_num = test_MA_num)
+
+loggedsave(datasets_MA_particionados, "Datasets")
+}
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 2. Entrenamiento de los modelos
+
+```{r}
+# Reset
+rm(list = ls())
+source("../4.Functions/myCustomFunctions.R")
+train_switch <- 0
+if (train_switch == 0){
+    nb_MA_train <- readRDS("Models/nb_MA_train.RDS")
+    GBM_MA_train <- readRDS("Models/GBM_MA_train.RDS")
+    rf_MA_train <- readRDS("Models/rf_MA_train.RDS")
+    nnet_MA_train <- readRDS("Models/nnet_MA_train.RDS")
+    C5_MA_train <- readRDS("Models/C5_MA_train.RDS")
+}
+list2env(readRDS("Datasets/datasets_MA_particionados.rds"), envir = .GlobalEnv)
+```
+
+## Método de validación cruzada
+
+```{r}
+fiveStats = function(...) c (multiClassSummary(...), defaultSummary(...))
+control <- trainControl( method = "repeatedcv",
+                         number = 8, 
+                         repeats = 2,
+                         classProbs = TRUE,
+                         summaryFunction = fiveStats,
+                         returnResamp = "final",
+                         verboseIter = TRUE,
+                         allowParallel = TRUE)
+metrica <- "logLoss"
+```
+
+## 2.1. Modelos de redes bayesianas
+
+### 2.1.1. Naïve Bayes
+
+```{r}
+if (train_switch  == 1) {
+set.seed(7)
+
+tic()
+  
+  clusterCPU <- makePSOCKcluster(detectCores() - 1)
+  registerDoParallel(clusterCPU)
+  
+  nb_MA_train <- train(train_MA_factor[, !names(train_MA_factor) %in% "y"],
+                  train_MA_factor$y,
+                  method = 'nb',
+                  metric = metrica, 
+                  # preProc = c('center', 'scale'),
+                  trControl = control)
+  
+  
+  stopCluster(clusterCPU)
+  clusterCPU <- NULL
+  
+  saveRDS(nb_MA_train, "Models/nb_MA_train.RDS")
+
+toc()
+
+}else{
+  nb_MA_train <- readRDS("Models/nb_MA_train.RDS")
+}
+```
+
+```{r}
+# Resultados
+nb_MA_train
+```
+
+```{r}
+# Métricas
+grafico_metricas(nb_MA_train)
+```
+
+```{r}
+# Resultados
+resultados(nb_MA_train, "Naive Bayes")
+```
+
+```{r}
+# Mejor modelo
+mejor_modelo(nb_MA_train)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Curvas ROC y AUC
+curvas_ROC(nb_MA_train, "de Naïve Bayes", train_MA_factor, test_MA_factor)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Validación: Matriz de confusión
+validation(nb_MA_train, "de Naïve Bayes", train_MA_factor, test_MA_factor)
+```
+
+#### Resumen de métricas
+
+```{r message=FALSE, warning=FALSE}
+# Resumen de métricas
+resumen_MA_nb <- resumen_multiclass(nb_MA_train, train_MA_factor, test_MA_factor)
+
+# Presentación
+resumen_MA_nb %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Naïve Bayes Classifier" = 5))
+```
+
+#### Importancia de las variables
+
+```{r}
+# Importancia general de las variables
+importancia_var_overall(nb_MA_train, "de Naïve Bayes")
+```
+
+```{r}
+# Importancia de variables por cada valor de predicción
+importancia_var(nb_MA_train, "de Naïve Bayes")
+```
+
+## 2.2. Modelos Gradient Boosting
+
+### 2.2.1. Modelo GBM
+
+```{r}
+# Entrenamiento
+if (train_switch  == 1) {
+set.seed(7)
+tic()
+
+clusterCPU <- makePSOCKcluster( detectCores()-1 )
+registerDoParallel(clusterCPU)
+
+tune_grid <- expand.grid(n.trees = seq(from = 100, to = 500, by = 25),
+                         interaction.depth = c(1, 2, 3, 4, 5),
+                         shrinkage = 0.1,
+                         n.minobsinnode = 10)
+
+GBM_MA_train <- train(train_MA_num[ , -length(train_MA_num)], 
+                 train_MA_num$y,
+                 method = "gbm",
+                 metric = metrica,
+                 trControl = control,
+                 tuneGrid = tune_grid)
+
+stopCluster(clusterCPU)
+
+saveRDS(GBM_MA_train, "Models/GBM_MA_train.RDS")
+toc()
+
+}else{
+  GBM_MA_train <- readRDS("Models/GBM_MA_train.RDS")
+}
+```
+
+```{r}
+# Resultados
+GBM_MA_train
+```
+
+```{r}
+# Metricas
+grafico_metricas(GBM_MA_train)
+```
+
+```{r}
+# Resultados
+resultados(GBM_MA_train, "Stochastic Gradient Boosting")
+```
+
+```{r}
+# Mejore modelo
+mejor_modelo(GBM_MA_train)
+```
+
+```{r}
+# Curvas ROC y AUC
+curvas_ROC(GBM_MA_train, "de Stochastic Gradient Boosting", train_MA_num, test_MA_num)
+```
+
+```{r}
+# Validación, Matriz de confusión
+validation(GBM_MA_train, "Stochastic Gradient Boosting", train_MA_num, test_MA_num)
+```
+
+#### Resumen de métricas
+
+```{r}
+# Resumen
+resumen_MA_GBM <- resumen_multiclass(GBM_MA_train, train_MA_num, test_MA_num)
+
+# Presentación
+resumen_MA_GBM %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Stochastic Gradient Boosting " = 5))
+```
+
+#### Importancia de las variables
+
+```{r}
+# Importancia de variables por cada valor de predicción
+#GBM_MA_train$modelInfo$varImp <- NULL   # Anular la función para solucionar bug
+importancia_var(GBM_MA_train, "Stochastic Gradient Boosting")
+```
+
+## 2.3. Otros modelos
+
+### 2.3.1. Random Forest
+
+```{r}
+# Entrenamiento
+if (train_switch  == 1) {
+set.seed(7)
+tic()
+
+clusterCPU <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(clusterCPU)
+
+rfGrid <-  expand.grid(mtry = c(5,10,15,20,29))
+
+rf_MA_train <- train(y ~ ., data = train_MA_general,
+                  method = "rf", metric = metrica,
+                  #preProc = c("center", "scale"),
+                  trControl = control,
+                  tuneGrid = rfGrid)
+
+stopCluster(clusterCPU)
+
+saveRDS(rf_MA_train, "Models/rf_MA_train.RDS")
+toc()
+
+}else{
+  rf_MA_train <- readRDS("Models/rf_MA_train.RDS")
+}
+```
+
+```{r}
+# Resultados
+rf_MA_train
+```
+
+```{r}
+# Métricas
+grafico_metricas(rf_MA_train)
+```
+
+```{r}
+# Resultados
+resultados(rf_MA_train, "Random Forest")
+```
+
+```{r}
+# Mejor modelo
+mejor_modelo(rf_MA_train)
+```
+
+```{r}
+# Curvas ROC y AUC
+curvas_ROC(rf_MA_train, "de Random Forest", train_MA_general, test_MA_general)
+```
+
+```{r}
+# Validación, Matriz de confusión
+validation(rf_MA_train, "RF", train_MA_general, test_MA_general)
+```
+
+#### Resumen de métricas
+
+```{r}
+# Resumen
+resumen_MA_rf <- resumen_multiclass(rf_MA_train, train_MA_general, test_MA_general)
+
+# Presentación
+resumen_MA_rf %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Random forest " = 5))
+```
+
+#### Importancia de las variables
+
+```{r}
+# Importancia general de variables
+importancia_var_overall(rf_MA_train, "Random Forest")
+```
+
+### 2.3.2. Perceptrón Multicapa
+
+```{r}
+if (train_switch  == 1) {
+set.seed(7)
+
+tic()
+
+clusterCPU <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(clusterCPU)
+
+nnetGrid <-  expand.grid(size = c(1:10),
+                         decay =c(0.01, 0.05, 0.5 ,0.1))
+
+nnet_MA_train <- train(y ~ .,
+                    data = train_MA_general,
+                    method = "nnet",
+                    metric = metrica,
+                    #preProc = c("center", "scale"),
+                    trControl = control,
+                    tuneGrid = nnetGrid)
+
+stopCluster(clusterCPU)
+
+saveRDS(nnet_MA_train, "Models/nnet_MA_train.RDS")
+
+toc()
+
+}else{
+  nnet_MA_train <- readRDS("Models/nnet_MA_train.RDS")
+}
+```
+
+```{r}
+# Resultados
+nnet_MA_train
+```
+
+```{r}
+# Métricas
+grafico_metricas(nnet_MA_train)
+```
+
+```{r}
+# Resultados
+resultados(nnet_MA_train, "Perceptrón multicapa")
+```
+
+```{r}
+# Mejor modelo
+mejor_modelo(nnet_MA_train)
+```
+
+```{r}
+# Curvas ROC y AUC
+curvas_ROC(nnet_MA_train, "Perceptrón multicapa", train_MA_general, test_MA_general)
+```
+
+```{r}
+# Validación, Matriz de confusión
+validation(nnet_MA_train, "Perceptrón multicapa", train_MA_general, test_MA_general)
+```
+
+#### Resumen de métricas
+
+```{r}
+# Resumen
+resumen_MA_nnet <- resumen_multiclass(nnet_MA_train, train_MA_general, test_MA_general)
+
+# Presentación
+resumen_MA_nnet %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Red Neuronal. Perceptrón Multicapa " = 5))
+```
+
+#### Importancia de las variables
+
+```{r}
+# Importancia general de las variables
+importancia_var_overall(nnet_MA_train, "Perceptrón multicapa")
+```
+
+### 2.3.3. Árbol C5
+
+```{r}
+# Entrenamiento
+ if (train_switch  == 1) {
+set.seed(7)
+
+tic()
+  
+  clusterCPU <- makePSOCKcluster(detectCores() - 1)
+  registerDoParallel(clusterCPU)
+  
+
+  grid_c50 <- expand.grid(winnow = c(T, F),
+                        trials = c(1, 5, 10, 15, 20),
+                        model = 'tree')
+  
+  tic()
+  C5_MA_train <- train(y~.,                                                  
+                  data = train_MA_general,
+                  method = 'C5.0',
+                  metric = metrica,
+                  #preProc = c('center', 'scale'),
+                  trControl = control,
+                  tuneLength = 10,
+                  tuneGrid = grid_c50)
+ 
+  stopCluster(clusterCPU)
+  clusterCPU <- NULL
+
+  saveRDS(C5_MA_train, "Models/C5_MA_train.RDS")
+
+toc()
+
+}else{
+  C5_MA_train <- readRDS("Models/C5_MA_train.RDS")
+}
+```
+
+```{r}
+# Resultado
+C5_MA_train
+```
+
+```{r}
+# Gráfico de métricas
+grafico_metricas(C5_MA_train)
+```
+
+```{r}
+# Resultados
+resultados(C5_MA_train, "Árbol C5")
+```
+
+```{r}
+# Mejor modelo
+mejor_modelo(C5_MA_train)
+```
+
+```{r}
+# Curvas ROC y AUC
+curvas_ROC(C5_MA_train, "de Árbol C5", train_MA_general, test_MA_general)
+```
+
+```{r}
+# Validación, Matriz de confusión
+validation(C5_MA_train, "de Árbol C5", train_MA_general, test_MA_general)
+```
+
+#### Resumen
+
+```{r}
+# Resumen
+resumen_MA_C5 <- resumen_multiclass(C5_MA_train, train_MA_general, test_MA_general)
+
+# Presentación
+resumen_MA_C5 %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Árbol C5 " = 5))
+```
+
+#### Importancia de las variables
+
+```{r}
+# Importancia general de las variables
+C5_MA_train$modelInfo$varImp <- NULL
+importancia_var_overall(C5_MA_train, "de Árbol C5")
+```
+
+
+```{r}
+# Importancia de variables por cada valor de predicción
+
+importancia_var(C5_MA_train, "de Árbol C5")
+```
+
+## 2.4. Redes neuronales con Keras
+
+### 2.4.1. API Secuencial: Red densamente conectada
+
+```{r}
+# Conversión a variables dummy para la variable objetivo con ayuda de la librería fastDummies
+y_train <- dummy_cols(train_MA_num, select_columns = "y", ) %>%
+  select(starts_with("y_"))
+
+y_test <- dummy_cols(test_MA_num, select_columns = "y") %>%
+  select(starts_with("y_"))
+
+# Selección de las variables explicativas en formato numérico (ya normalizadas)
+x_train <- train_MA_num %>%
+  select(-y)
+
+x_test <- test_MA_num %>%
+  select(-y)
+```
+
+```{r}
+# Crear el modelo
+keras_model_1 <- keras_model_sequential() %>%
+  layer_dense(units = 128, activation = 'relu', input_shape = dim(x_train)[2]) %>%
+  layer_dropout(rate = 0.5) %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dropout(rate = 0.5) %>%
+  layer_dense(units = dim(y_train)[2], activation = 'softmax')
+
+# Estructura
+print(keras_model_1)
+```
+
+```{r}
+# Compilar el modelo
+keras_model_1 %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = 'adam',
+  metrics = c('accuracy')
+)
+```
+
+```{r}
+# Entrenar el modelo
+if (train_switch  == 1) {
+keras_model_evolution <- keras_model_1 %>%
+  fit(as.matrix(x_train), as.matrix(y_train),
+      epochs = 50,
+      batch_size = 32,
+      callbacks = list(callback_early_stopping(monitor = 'val_loss', patience = 10, restore_best_weights = TRUE)),
+      validation_data = list(as.matrix(x_test), as.matrix(y_test))
+      )
+  keras_model_1 %>% save_model_hdf5("Models/keras_model_1.hdf5")
+  saveRDS(keras_model_evolution, "Models/keras_model_evolution.rds")
+} else {
+keras_model_1 <- load_model_hdf5("Models/keras_model_1.hdf5")
+keras_model_evolution <- readRDS("Models/keras_model_evolution.rds")
+}
+```
+
+```{r}
+keras_model_evolution
+```
+
+```{r}
+plot(keras_model_evolution)
+```
+
+#### Resumen de métricas
+
+```{r}
+# Resumen de métricas
+resumen_MA_keras_model_1 <- keras_resumen_multiclass(keras_model_1, x_train, x_test, y_train, y_test)
+
+# Presentación
+resumen_MA_keras_model_1 %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "keras_model_1" = 5))
+```
+
+```{r}
+modelo <- keras_model_1
+
+  # Entrenamiento
+  predicciones <- predict(modelo, as.matrix(x_train))
+  predicciones <- apply(predicciones, 1, which.max)
+  Y_train <- max.col(y_train)
+  
+  curvaROC_train <- multiclass.roc(Y_train, predicciones)
+  AUC_train <- round(auc(curvaROC_train),digits=3)
+  
+  confusion_train <- confusionMatrix(as.factor(Y_train), as.factor(predicciones))
+  
+  Accuracy_train <- round(c(confusion_train[["overall"]][["Accuracy"]]), digits=3)
+  
+  Kappa_train <- round(c(confusion_train[["overall"]][["Kappa"]]), digits=3)
+```
+
+
+## 2.5. Extra: H2o Framework
+
+Como extra, se va a comparar los modelos anteriores con uno automático para ver si se puede mejorar los resultados 
+
+```{r}
+# Arranque de h2o
+h2o.init()
+```
+
+## 2.5.1. AutoML Procesado
+
+```{r}
+# Conversión del dataframe general a un objeto H2o
+h2o_df <- data.table(readRDS("Datasets/MergedActivityGeneral.rds")) %>% 
+  as.h2o()
+```
+
+```{r}
+# División de datos en entrenamiento y validación
+splits <- h2o.splitFrame(h2o_df, ratios = c(0.8, 0.19999))
+h2o_train <- splits[[1]]
+h2o_test <- splits[[2]]
+
+# Establecimiento de los nombres de las variables predictoras
+predictoras <- colnames(h2o_train)[1:12]
+# y el nombre de la variable objetivo
+respuesta <- "y"
+```
+
+```{r}
+# Entrenamiento
+if (train_switch  == 1) {
+
+set.seed(123)
+  
+# Configuramos y ejecutamos el proceso de auto machine learning
+mod_aml_h2o <- h2o.automl(
+  x = predictoras,
+  y = respuesta,
+  training_frame = h2o_train,
+  leaderboard_frame = h2o_test,
+  max_runtime_secs = 2000  # Tiempo máximo de ejecución en segundos
+)
+
+# Guardamos el modelo y el objeto h2o
+saveRDS(mod_aml_h2o, "Models/mod_aml_h2o.RDS")
+h2o.saveModel(object= mod_aml_h2o@leader, path="Models/", force=TRUE)
+}
+# Leemos el modelo y el objeto h2o
+mod_aml_h2o <- readRDS("Models/mod_aml_h2o.RDS")
+h2o.loadModel(paste0("Models/", mod_aml_h2o@leader@model_id))
+```
+
+```{r}
+# Mejor modelo
+mod_aml_h2o@leaderboard
+```
+
+```{r}
+# Rendimiento del mejor modelo
+h2o.performance(mod_aml_h2o@leader, newdata = h2o_test)
+```
+
+# 3. Comparación de los modelos
+
+## 3.1. Importancia de las variables
+
+```{r fig.height=8, fig.width=10}
+ggarrange(importancia_var_overall(rf_MA_train, "de Random Forest"),
+          importancia_var_overall(C5_MA_train, "de C5"),
+          importancia_var(GBM_MA_train, "de Gradient Boosting"),
+          importancia_var_overall(nnet_MA_train, "de Perceptrón Multicapa"),
+          ncol=2,nrow=2)
+```
+
+## 3.2. Desempeño de los modelos
+
+```{r}
+# Los dos cuadros con los algoritmos utilizados los construimos uniendo la salida de la función resumen
+Nombresmodelos <- c("NB", "GBM", "RF", "MLP","C5","Keras")
+
+# Para los datos de entrenamiento
+DatosEntrenamiento <- rbind(resumen_MA_nb[1,], resumen_MA_GBM[1,], resumen_MA_rf[1,], resumen_MA_nnet[1,], resumen_MA_C5[1,], resumen_MA_keras_model_1[1,])
+
+rownames(DatosEntrenamiento) <- Nombresmodelos
+
+DatosEntrenamiento <- as.data.frame(DatosEntrenamiento)
+
+DatosEntrenamiento %>% arrange(-AUC) %>% 
+    mutate(AUC = color_tile("white", "orange")(AUC),
+    Accuracy = color_tile("white", "pink")(Accuracy),
+    
+    Kappa = color_tile("white", "pink")(Kappa),
+    
+    Sensitivity = color_tile("white", "purple")(Sensitivity),
+    
+    Specificity = color_tile("white", "green")(Specificity)
+    
+  ) %>%
+  kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Comparación con la Muestra de Entrenamiento" = 5))
+```
+
+
+```{r}
+# Los dos cuadros con los algoritmos utilizados los construimos uniendo la salida de la función resumen
+Nombresmodelos <- c("NB", "GBM", "RF", "MLP","C5","Keras")
+
+# Para los datos de Validacion
+DatosValidacion <- rbind(resumen_MA_nb[2,], resumen_MA_GBM[2,], resumen_MA_rf[2,], resumen_MA_nnet[2,], resumen_MA_C5[2,], resumen_MA_keras_model_1[2,])
+
+rownames(DatosValidacion) <- Nombresmodelos
+
+DatosValidacion <- as.data.frame(DatosValidacion)
+
+DatosValidacion %>% arrange(-AUC) %>% 
+    mutate(AUC = color_tile("white", "orange")(AUC),
+    Accuracy = color_tile("white", "pink")(Accuracy),
+    
+    Kappa = color_tile("white", "pink")(Kappa),
+    
+    Sensitivity = color_tile("white", "purple")(Sensitivity),
+    
+    Specificity = color_tile("white", "green")(Specificity)
+    
+  ) %>%
+  kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Comparación con la Muestra de Validación" = 5))
+```
+
+Comparativa de Logloss para todos los modelos:
+
+```{r}
+# Tabla comparativa
+Nombresmodelos <- c("NB", "GBM", "RF", "MLP","C5","Keras", "AutoML")
+
+DatosEntrenamiento <- rbind(mean(nb_MA_train$results$logLoss),
+                            mean(GBM_MA_train$results$logLoss),
+                            mean(rf_MA_train$results$logLoss),
+                            mean(nnet_MA_train$results$logLoss),
+                            mean(C5_MA_train$results$logLoss),
+                            (keras_model_1 %>% evaluate(as.matrix(x_test), as.matrix(y_test)))[["loss"]],
+                            h2o.performance(mod_aml_h2o@leader)@metrics[["logloss"]]
+                            )
+
+rownames(DatosEntrenamiento) <- Nombresmodelos
+
+DatosEntrenamiento <- as.data.frame(DatosEntrenamiento) %>% rename(logloss = V1)
+
+DatosEntrenamiento %>% arrange(logloss) %>% 
+    mutate(logloss = color_tile("lightyellow", "white")(logloss)) %>% 
+    kable(escape = F) %>%
+    kable_styling("hover", full_width = F) 
+```
+
+```{r}
+z <- h2o.performance(mod_aml_h2o@leader)@metrics
+```
+
+
+## 3.3. Contraste de hipótesis
+
+```{r}
+modelos <- list(NB = nb_MA_train, GBM = GBM_MA_train, RF = rf_MA_train,
+                MLP = nnet_MA_train, C5 = C5_MA_train)
+
+comp_modelos <- resamples(modelos)
+comp_modelos
+```
+
+```{r}
+summary(comp_modelos)
+```
+
+```{r}
+dotplot(comp_modelos)
+```
+
+```{r}
+densityplot(comp_modelos, metric = "Kappa" ,auto.key = list(columns = 3))
+```
+
+```{r}
+diferencias <- diff(comp_modelos)
+summary(diferencias)
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+
+
+
+
+
+
+
+

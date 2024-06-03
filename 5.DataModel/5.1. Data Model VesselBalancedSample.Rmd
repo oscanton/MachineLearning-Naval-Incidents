@@ -1,0 +1,1464 @@
+---
+title: "TFM: Análisis predictivo de incidentes navales en EEUU, 2002 - 2015"
+subtitle: "Anexo 5.1. Modelado: VesselBalancedSample"
+author: "Oscar Antón"
+date: "`r format(Sys.time(), '%B de %Y')`"
+output: 
+  html_document:
+    theme: cerulean
+    df_print: paged
+---
+
+```{=html}
+<!-- Texto justificado -->
+<style> body {text-align: justify} </style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+### Carga de librerías, funciones y datos
+
+```{r message=FALSE, warning=FALSE}
+# Librería                        # Propósito
+library(tidyverse)                # Sintaxis para el manejo de datos. Incluye dplyr, ggplot2, etc.
+library(data.table)               # Manejo eficiente de conjuntos de datos
+
+library(arulesCBA)                # Discretización de variables (Redes bayesianas)
+library(fastDummies)              # Variables Dummy (One hot encoding)
+
+library(caret)                    # Modelos de machine Learning
+library(gbm)                      # Manejo de modelos Gradient Boosting. Debido a error varImp()
+library(pROC)                     # Performance de modelos (curva ROC)
+library(doParallel)               # Cómputo multihilo
+library(tictoc)                   # Benchmarking (tiempo de cómputo)
+
+library(DALEX)                    # Interpretabilidad de modelos ML
+library(iBreakDown)               # Explicatividad local
+library(modelStudio)              # Análisis interactivo de explicabilidad
+
+library(gridExtra)                # Manejo de gráficos
+library(kableExtra)               # Formato de tablas
+library(formattable)              # Formato de tablas
+library(ggpubr)                   # Visualización de datos (ggarrange)
+library(tidyverse)                # Sintaxis para el manejo de datos. Incluye dplyr, ggplot2, etc.
+
+source("myCustomFunctions.R")
+```
+
+```{r}
+# Cargar el dataframe VesselBalancedSample (50% barcos con incidentes, 50% barcos sin incidentes)
+# Se lee como dataframe en vez de como datatable para evitar errores
+VesselBalancedSample <- as.data.frame(readRDS("../1.DataPreprocess/DataMergedActivity/VesselBalancedSample.rds"))
+```
+
+Switches
+
+```{r}
+# Guardar datos o no
+save_switch <- 0
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 1. Creación de datasets para los modelos
+
+ · 1: Propósito general: Con variables factor y numéricas (normalizadas): DataSetGeneral
+
+ · 2: Para redes Bayesanas: Con variables factoriales: DataSetFactor
+
+ · 3: Para modelos de Gradient Boosting: Con variables numéricas: DataSetNum
+
+## 1.1. Dataset con variables numéricas y factor (General)
+
+ · Creación de la variable objetivo: "y" (involucrado en incidente o no). Será la última variable del dataset
+
+ · Criba de variables
+
+ · Reducción de variabilidad en categóricas
+
+ · Escalado para variables numéricas
+
+```{r}
+# Adaptación de variables:
+DataSetGeneral <- VesselBalancedSample %>% 
+  mutate(y = factor(ifelse(event_type != "No event", "Yes", "No"))) %>% 
+  select(-vessel_id, -imo_number, -vessel_name, -event_type, -damage_status) %>% 
+  mutate(build_year = cut(as.integer(build_year),
+                          breaks = c(-Inf, 1940, 1960, 1980, 2000, Inf),
+                          labels = c("very Old", "old", "average", "new", "very new"))) %>% 
+  rename(vessel_length = length) %>% 
+  mutate_at(vars(vessel_class, flag_abbr, classification_society, solas_desc), lump_factorials) %>% 
+  mutate_at(vars(gross_ton, vessel_length), scale)
+```
+
+```{r}
+# Verificación de estructura
+str(DataSetGeneral)
+```
+
+Nota: En este caso, la muestra ya está balanceada y no hay valores ausentes
+
+```{r}
+# Guardado de datos
+if (save_switch  == 1) {
+loggedsave(DataSetGeneral, "Datasets")
+}
+```
+
+## 1.2. Dataset con variables factor (Redes bayesianas)
+
+```{r}
+# Aplicación del método mdlp con ayuda de la librería arulesCBA para discretizar las variables factoriales
+DataSetFactor <- discretizeDF.supervised(y ~ ., DataSetGeneral)
+```
+
+```{r}
+# Verificación de estructura
+str(DataSetFactor)
+```
+
+```{r}
+# Guardado de datos
+if (save_switch  == 1) {
+loggedsave(DataSetFactor, "Datasets")
+}
+```
+
+## 1.3. Dataset con variables numéricas (Gradient Boosting)
+
+```{r}
+# Creamos variables dummy con la ayuda de la librería fastDummies y juntamos con las variables numéricas
+# Pero la  variable objetivo se queda como factor para utilizarse en modelos de clasificación
+DataSetNum <- cbind(
+  dummy_cols(DataSetGeneral[ , c(1, 2, 5, 6, 7)], remove_selected_columns = TRUE),
+  DataSetGeneral[ ,c(3, 4, 8)]
+)
+```
+
+```{r}
+# Verificación de estructura
+str(DataSetNum)
+```
+
+```{r}
+# Guardado de datos
+if (save_switch  == 1) {
+loggedsave(DataSetNum, "Datasets")
+}
+```
+
+## 1.4. Particionado de datos
+
+```{r}
+# Índice de partición
+Indice_Particion <- createDataPartition(DataSetGeneral$y, p = 0.80, list = FALSE )
+
+# Muestras de entrenamiento y test para propósito general
+train_general <- DataSetGeneral[Indice_Particion, ]
+test_general <- DataSetGeneral[-Indice_Particion, ]
+
+# Muestras de entrenamiento y test para redes bayesanas
+train_factor <- DataSetFactor[Indice_Particion, ]
+test_factor <- DataSetFactor[-Indice_Particion, ]
+
+# Muestras de entrenamiento y test para Gradient Boosting
+train_num <- DataSetNum[ Indice_Particion, ]
+test_num <- DataSetNum[ -Indice_Particion, ]
+```
+
+```{r}
+# Guardado de datos
+if (save_switch  == 1) {
+datasets_particionados <- list(train_general = train_general,
+                               test_general = test_general,
+                               train_factor = train_factor,
+                               test_factor = test_factor,
+                               train_num = train_num,
+                               test_num = test_num)
+
+loggedsave(datasets_particionados, "Datasets")
+}
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 2. Entrenamiento de los modelos
+
+```{r}
+# Reset
+rm(list = ls())
+source("../4.Functions/myCustomFunctions.R")
+train_switch <- 0
+list2env(readRDS("Datasets/datasets_particionados.rds"), envir = .GlobalEnv)
+```
+
+## Método de validación cruzada
+
+```{r}
+fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+control <- trainControl( method = "repeatedcv",
+                         number = 8, 
+                         repeats = 2,
+                         classProbs = TRUE,
+                         summaryFunction = fiveStats,
+                         returnResamp = "final",
+                         verboseIter = TRUE,
+                         allowParallel = TRUE)
+metrica <- "ROC"
+```
+
+## 2.1. Modelos de redes bayesianas
+
+### 2.1.1. Naïve Bayes
+
+```{r}
+if (train_switch  == 1) {
+set.seed(7)
+
+tic()
+  
+  clusterCPU <- makePSOCKcluster(detectCores() - 1)
+  registerDoParallel(clusterCPU)
+  
+  nb_train <- train(train_factor[, !names(train_factor) %in% "y"],
+                  train_factor$y,
+                  method = 'nb',
+                  metric = metrica, 
+                  # preProc = c('center', 'scale'),
+                  trControl = control)
+  
+  
+  stopCluster(clusterCPU)
+  clusterCPU <- NULL
+  
+  saveRDS(nb_train, "Models/nb_train.RDS")
+
+toc()
+
+}else{
+  nb_train <- readRDS("Models/nb_train.RDS")
+}
+```
+
+```{r}
+# Resultado
+nb_train
+```
+
+```{r}
+# Métricas
+grafico_metricas(nb_train)
+```
+
+```{r}
+# Resultados
+resultados(nb_train, "Naive Bayes")
+```
+
+```{r}
+# Mejor modelo
+mejor_modelo(nb_train)
+```
+
+```{r warning=FALSE}
+curvas_ROC(nb_train, "de Naïve Bayes", train_factor, test_factor)
+```
+
+```{r warning=FALSE}
+validation(nb_train, "de Naïve Bayes", train_factor, test_factor)
+```
+
+```{r warning=FALSE}
+resumen_nb <- resumen(nb_train, train_factor, test_factor)
+```
+
+```{r}
+resumen_nb %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Naïve Bayes Classifier" = 7))
+```
+
+```{r}
+importancia_var(nb_train, "de Naïve Bayes")
+```
+
+### 2.1.2. Modelo TAN
+
+```{r}
+# Entrenamiento
+if (train_switch  == 1) {
+set.seed(7)
+
+tic()
+
+clusterCPU <- makePSOCKcluster( detectCores()-1 )
+registerDoParallel(clusterCPU)
+
+TAN_Grid <- expand.grid(score = c( 'loglik', 'bic', 'aic' ),
+                         smooth = seq(from = 0, to = 10, by = 1))
+tan_train <- train(train_factor[,-length(train_factor)],
+                   train_factor$y,
+                 method = 'tan',
+                 metric = metrica,
+                 trControl = control,
+                 tuneGrid = TAN_Grid)
+
+stopCluster(clusterCPU)
+
+saveRDS( tan_train, "Models/tan_train.RDS")
+
+toc()
+
+}else{
+  tan_train <- readRDS("Models/tan_train.RDS")
+}
+```
+
+```{r}
+# Resultado
+tan_train
+```
+
+```{r}
+grafico_metricas(tan_train)
+```
+
+```{r}
+resultados(tan_train, "Tree Augmented Naïve Bayes")
+```
+
+```{r}
+mejor_modelo(tan_train)
+```
+
+```{r}
+curvas_ROC(tan_train, "de Tree Augmented Naïve Bayes", train_factor, test_factor)
+```
+
+```{r}
+validation(tan_train, "de Tree Augmented Naïve Bayes", train_factor, test_factor)
+```
+
+```{r}
+resumen_tan <- resumen(tan_train, train_factor, test_factor)
+```
+
+```{r}
+resumen_tan %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Tree Augmented Naïve Bayes" = 7))
+```
+
+```{r}
+importancia_var(tan_train, "de Tree Augmented Naïve Bayes")
+```
+
+```{r}
+Rgraphviz::plot(tan_train$finalModel)
+```
+
+### 2.1.3. Modelo TAN Search
+
+```{r}
+# Entrenamiento
+if (train_switch  == 1) {
+set.seed(7)
+
+tic()
+  
+  clusterCPU <- makePSOCKcluster(detectCores() - 1)
+  registerDoParallel(clusterCPU)
+
+  tanse_train <- train(train_factor[,-length(train_factor)], 
+                    train_factor$y, 
+                    method = 'tanSearch', 
+                    metric=metrica, 
+                    trControl=control)
+    stopCluster(clusterCPU)
+  clusterCPU <- NULL
+  
+saveRDS(tanse_train, "Models/tanse_train.RDS")
+
+toc()
+
+}else{
+  tanse_train <- readRDS("Models/tanse_train.RDS")
+}
+```
+
+```{r}
+# Resultados
+tanse_train
+```
+
+```{r}
+# Gráfico de métricas
+grafico_metricas(tanse_train)
+```
+
+```{r}
+resultados(tanse_train, "Search Tree Augmented Naïve Bayes")
+```
+
+```{r}
+mejor_modelo(tanse_train)
+```
+
+```{r}
+curvas_ROC(tanse_train, "de Search Tree Augmented Naïve Bayes", train_factor, test_factor)
+```
+
+```{r}
+validation(tanse_train, "de Search Tree Augmented Naïve Bayes", train_factor, test_factor)
+```
+
+```{r}
+resumen_tanse <- resumen(tanse_train, train_factor, test_factor)
+```
+
+```{r}
+resumen_tanse %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Search Tree Augmented Naïve Bayes" = 7))
+```
+
+```{r}
+importancia_var(tanse_train, "de Search Tree Augmented Naïve Bayes")
+```
+
+```{r}
+Rgraphviz::plot(tanse_train$finalModel)
+```
+
+### 2.1.4. Modelo TAN Hill Climbing
+
+```{r}
+# Entrenamiento
+if (train_switch  == 1) {
+set.seed(7)
+
+tic()
+
+clusterCPU <- makePSOCKcluster( detectCores()-1 )
+registerDoParallel(clusterCPU)
+
+TANHC_Grid <- expand.grid(smooth = seq(from = 0, to = 15, by=1),epsilon=c(0.1,0.2))
+
+tanhc_train <- train(train_factor[,-length(train_factor)], 
+                   train_factor$y,
+                   method = AlgTANHC,
+                   metric = metrica,
+                   trControl = control,
+                   tuneGrid = TANHC_Grid)
+
+
+stopCluster(clusterCPU)
+saveRDS(tanhc_train, "Models/tanhc_train.RDS")
+
+toc()
+
+}else{
+  tanhc_train <- readRDS("Models/tanhc_train.RDS")
+}
+```
+
+```{r}
+# Resultados
+tanhc_train
+```
+
+```{r}
+grafico_metricas(tanhc_train)
+```
+
+```{r}
+resultados(tanhc_train, "Hill Climbing Tree Augmented Naïve Bayes")
+```
+
+```{r}
+mejor_modelo(tanhc_train)
+```
+
+```{r}
+curvas_ROC(tanhc_train, "de Hill Climbing Tree Augmented Naïve Bayes", train_factor, test_factor)
+```
+
+```{r}
+validation(tanhc_train, "de Hill Climbing Tree Augmented Naïve Bayes", train_factor, test_factor)
+```
+
+```{r}
+resumen_tanhc <- resumen(tanhc_train, train_factor, test_factor)
+```
+
+```{r}
+resumen_tanhc %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Hill Climbing Tree Augmented Naïve Bayes" = 7))
+```
+
+### 2.1.5. Modelo Aggregating One-Dependence Estimators (AODE)
+
+```{r}
+# Entrenamiento
+if (train_switch  == 1) {
+set.seed(7)
+
+tic()
+
+clusterCPU <- makePSOCKcluster( detectCores()-1 )
+registerDoParallel(clusterCPU)
+
+AODE_Grid <- expand.grid(smooth = seq(from = 0, to = 15, by = 1))
+
+aode_train <- train(train_factor[,-length(train_factor)], 
+                  train_factor$y,
+                  method = AODE,
+                  metric = metrica,
+                  trControl = control,
+                  tuneGrid = AODE_Grid)
+
+stopCluster(clusterCPU)
+
+saveRDS(aode_train, "Models/aode_train.RDS")
+toc()
+
+}else{
+  aode_train <- readRDS("Models/aode_train.RDS")
+}
+```
+
+```{r}
+# Resultado
+aode_train
+```
+
+```{r}
+grafico_metricas(aode_train)
+```
+
+```{r}
+resultados(aode_train, "Aggregating One-Dependence Estimators")
+```
+
+```{r}
+mejor_modelo(aode_train)
+```
+
+```{r}
+curvas_ROC(aode_train, "de Aggregating One-Dependence Estimators", train_factor, test_factor)
+```
+
+```{r}
+validation(aode_train, "de Aggregating One-Dependence Estimators", train_factor, test_factor)
+```
+
+```{r}
+resumen_AODE <- resumen(aode_train, train_factor, test_factor)
+```
+
+```{r}
+resumen_AODE %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Aggregating One-Dependence Estimators " = 7))
+```
+
+```{r}
+importancia_var(aode_train, "AODE")
+```
+
+## 2.2. Modelos Gradient Boosting
+
+### 2.2.1. Modelo GBM
+
+```{r}
+# Entrenamiento
+if (train_switch  == 1) {
+set.seed(7)
+tic()
+
+clusterCPU <- makePSOCKcluster( detectCores()-1 )
+registerDoParallel(clusterCPU)
+
+tune_grid <- expand.grid(n.trees = seq(from = 100, to = 500, by = 25),
+                         interaction.depth = c(1, 2, 3, 4, 5),
+                         shrinkage = 0.1,
+                         n.minobsinnode = 10)
+
+GBM_train <- train(train_num[ , -length(train_num)], 
+                 train_num$y,
+                 method = "gbm",
+                 metric = metrica,
+                 trControl = control,
+                 tuneGrid = tune_grid)
+
+stopCluster(clusterCPU)
+
+saveRDS(GBM_train, "Models/GBM_train.RDS")
+toc()
+
+}else{
+  GBM_train <- readRDS("Models/GBM_train.RDS")
+}
+```
+
+```{r}
+GBM_train
+```
+
+```{r}
+grafico_metricas(GBM_train)
+```
+
+```{r}
+resultados(GBM_train, "Stochastic Gradient Boosting")
+```
+
+```{r}
+mejor_modelo(GBM_train)
+```
+
+```{r}
+curvas_ROC(GBM_train, "de Stochastic Gradient Boosting", train_num, test_num)
+```
+
+```{r}
+validation(GBM_train, "Stochastic Gradient Boosting", train_num, test_num)
+```
+
+```{r}
+resumen_GBM <- resumen(GBM_train, train_num, test_num)
+```
+
+```{r}
+resumen_GBM %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Stochastic Gradient Boosting " = 7))
+```
+
+```{r}
+importancia_var(GBM_train, "Stochastic Gradient Boosting")
+```
+
+### 2.2.2. Modelo Extreme Gradient Boosting (XGBTree)
+
+```{r}
+# Entrenamiento
+if (train_switch  == 10) {
+set.seed(7)
+tic()
+
+clusterCPU <- makePSOCKcluster( detectCores()-1 )
+registerDoParallel(clusterCPU)
+
+# Primera ronda
+
+tune_grid <- expand.grid(nrounds = c(200, 250, 300, 350, 400, 500),
+                         eta = c(0.01, 0.025, 0.05, 0.1, 0.2, 0.3, 0.5),
+                         max_depth = c(2, 3, 4, 5),
+                         gamma = 0,
+                         colsample_bytree = 0.3,
+                         min_child_weight = 1,
+                         subsample = 1 )
+
+XGB1_train <- train(train_num[ , -length(train_num)],  
+                   train_num$y,
+                   method = "xgbTree",
+                   metric = metrica,
+                   trControl = control,
+                   tuneGrid = tune_grid)
+
+# Segunda ronda
+
+tune_grid2 <- expand.grid(nrounds = XGB1_train$bestTune$nrounds,
+                          eta = XGB1_train$bestTune$eta,
+                          max_depth = c(3,4,5,6,7),
+                          gamma = 0,
+                          colsample_bytree = 0.3,
+                          min_child_weight = c(1, 2, 3, 4, 5),
+                          subsample = 1)
+
+
+XGB2_train <- train(train_num[ , -length(train_num)],  
+                   train_num$y,
+                   method = "xgbTree",
+                   metric = metrica,
+                   trControl = control,
+                   tuneGrid = tune_grid2)
+
+# Tercera ronda
+
+tune_grid3 <- expand.grid(nrounds = XGB1_train$bestTune$nrounds,
+                          eta = XGB1_train$bestTune$eta,
+                          max_depth = XGB2_train$bestTune$max_depth,
+                          gamma = 0,
+                          colsample_bytree = seq(0.1, 0.9, 0.1),
+                          min_child_weight = XGB2_train$bestTune$min_child_weight,
+                          subsample = c(0.25, 0.5, 0.75, 1.0 ))
+
+
+XGB3_train <- train(train_num[ , -length(train_num)],  
+                   train_num$y,
+                   method = "xgbTree",
+                   metric = metrica,
+                   trControl = control,
+                   tuneGrid = tune_grid3)
+
+# Cuarta ronda
+
+tune_grid4 <- expand.grid(nrounds = XGB1_train$bestTune$nrounds,
+                          eta = XGB1_train$bestTune$eta,
+                          max_depth = XGB2_train$bestTune$max_depth,
+                          gamma = seq(0, 1, 0.05),
+                          colsample_bytree = XGB3_train$bestTune$colsample_bytree,
+                          min_child_weight = XGB2_train$bestTune$min_child_weight,
+                          subsample = XGB3_train$bestTune$subsample)
+
+XGB4_train <- train(train_num[ , -length(train_num)],  
+                   train_num$y,
+                   method = "xgbTree",
+                   metric = metrica,
+                   trControl = control,
+                   tuneGrid = tune_grid4)
+
+# Quinta ronda
+
+tune_grid5 <- expand.grid(nrounds = seq(100, 600, 25),
+                          eta =  c(0.01, 0.05, 0.005),
+                          max_depth = XGB2_train$bestTune$max_depth,
+                          gamma = XGB4_train$bestTune$gamma,
+                          colsample_bytree = XGB3_train$bestTune$colsample_bytree,
+                          min_child_weight = XGB2_train$bestTune$min_child_weight,
+                          subsample = XGB3_train$bestTune$subsample)
+
+XGB5_train <- train(train_num[ , -length(train_num)],  
+                   train_num$y,
+                   method = "xgbTree",
+                   metric = metrica,
+                   trControl = control,
+                   tuneGrid = tune_grid5)
+
+# Ronda final
+
+tune_gridFinal <- expand.grid(nrounds = XGB5_train$bestTune$nrounds,
+                          eta = XGB5_train$bestTune$eta,
+                          max_depth = XGB5_train$bestTune$max_depth,
+                          gamma = XGB5_train$bestTune$gamma,
+                          colsample_bytree = XGB5_train$bestTune$colsample_bytree,
+                          min_child_weight = XGB5_train$bestTune$min_child_weight,
+                          subsample = XGB5_train$bestTune$subsample)
+
+XGBFinal_train <- train(train_num[ , -length(train_num)],  
+                   train_num$y,
+                   method = "xgbTree",
+                   metric = metrica,
+                   trControl = control,
+                   tuneGrid = tune_gridFinal)
+
+stopCluster(clusterCPU)
+
+toc()
+
+saveRDS(XGB1_train, "Models/XGB1_train.RDS")
+saveRDS(XGB2_train, "Models/XGB2_train.RDS")
+saveRDS(XGB3_train, "Models/XGB3_train.RDS")
+saveRDS(XGB4_train, "Models/XGB4_train.RDS")
+saveRDS(XGB5_train, "Models/XGB5_train.RDS")
+saveRDS(XGBFinal_train, "Models/XGBFinal_train.RDS")
+
+}else{
+  XGBFinal_train <- readRDS("Models/XGBFinal_train.RDS")
+}
+```
+
+```{r}
+resultados(XGBFinal_train , "Extreme Gradient Boosting")
+```
+
+```{r}
+mejor_modelo(XGBFinal_train)
+```
+
+```{r}
+curvas_ROC(XGBFinal_train , "Extreme Gradient Boosting", train_num, test_num)
+```
+
+```{r}
+validation(XGBFinal_train , "Extreme Gradient Boosting", train_num, test_num)
+```
+
+```{r}
+resumen_XGBFinal <- resumen(XGBFinal_train, train_num, test_num)
+```
+
+```{r}
+importancia_var(XGBFinal_train, "XGBFinal")
+```
+
+## 2.3. Otros modelos
+
+### 2.3.1. Random Forest
+
+```{r}
+# Entrenamiento
+if (train_switch  == 1) {
+set.seed(7)
+tic()
+
+clusterCPU <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(clusterCPU)
+
+rfGrid <-  expand.grid(mtry = c(5,10,15,20,29))
+
+rf_train <- train(y ~ ., data = train_general,
+                  method = "rf", metric = metrica,
+                  #preProc = c("center", "scale"),
+                  trControl = control,
+                  tuneGrid = rfGrid)
+
+stopCluster(clusterCPU)
+
+saveRDS(rf_train, "Models/rf_train.RDS")
+toc()
+
+}else{
+  rf_train <- readRDS("Models/rf_train.RDS")
+}
+```
+
+```{r}
+rf_train
+```
+
+```{r}
+grafico_metricas(rf_train)
+```
+
+```{r}
+resultados(rf_train, "Random Forest")
+```
+
+```{r}
+mejor_modelo(rf_train)
+```
+
+```{r}
+curvas_ROC(rf_train, "de Random Forest", train_general, test_general)
+```
+
+```{r}
+validation(rf_train, "RF", train_general, test_general)
+```
+
+```{r}
+resumen_rf <- resumen(rf_train, train_general, test_general)
+```
+
+```{r}
+resumen_rf %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Random forest " = 7))
+```
+
+```{r}
+importancia_var(rf_train, "RF")
+```
+
+### 2.3.2. Máquinas de vector soporte
+
+```{r}
+if (train_switch == 1) {
+set.seed(7)
+tic()
+
+clusterCPU <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(clusterCPU)
+
+svmGrid <-  expand.grid(sigma =seq (0.015, 0.045, by = 0.002), C = seq (0.15, 0.35, by = 0.02))
+
+svm_train <- train(y ~ .,
+                   data = train_general,
+                   method= "svmRadial",
+                   metric = metrica,
+                   #preProc = c("center", "scale"),
+                   trControl = control,
+                   tuneGrid = svmGrid)
+
+stopCluster(clusterCPU)
+
+saveRDS(svm_train, "Models/svm_train.RDS")
+toc()
+
+}else{
+  svm_train <- readRDS("Models/svm_train.RDS")
+}
+```
+
+```{r}
+svm_train
+```
+
+```{r}
+grafico_metricas(svm_train)
+```
+
+```{r}
+resultados(svm_train, "SVM")
+```
+
+```{r}
+mejor_modelo(svm_train)
+```
+
+```{r}
+curvas_ROC(svm_train, "de Máquinas de Vectores Soporte", train_general, test_general)
+```
+
+```{r}
+validation(svm_train, "SVM", train_general, test_general)
+```
+
+```{r}
+resumen_svm <- resumen(svm_train, train_general, test_general)
+```
+
+```{r}
+resumen_svm %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Máquinas de Vectores Soporte " = 7))
+```
+
+```{r}
+importancia_var(svm_train, "SVM")
+```
+
+### 2.3.3. Perceptrón multicapa
+
+```{r}
+if (train_switch  == 1) {
+set.seed(7)
+
+tic()
+
+clusterCPU <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(clusterCPU)
+
+nnetGrid <-  expand.grid(size = c(1:10),
+                         decay =c(0.01, 0.05, 0.5 ,0.1))
+
+nnet_train <- train(y ~ .,
+                    data = train_general,
+                    method = "nnet",
+                    metric = metrica,
+                    #preProc = c("center", "scale"),
+                    trControl = control,
+                    tuneGrid = nnetGrid)
+
+stopCluster(clusterCPU)
+
+saveRDS(nnet_train, "Models/nnet_train.RDS")
+
+toc()
+
+}else{
+  nnet_train <- readRDS("Models/nnet_train.RDS")
+}
+```
+
+```{r}
+nnet_train
+```
+
+```{r}
+grafico_metricas(nnet_train)
+```
+
+```{r}
+resultados(nnet_train, "Perceptrón multicapa")
+```
+
+```{r}
+mejor_modelo(nnet_train)
+```
+
+```{r}
+curvas_ROC(nnet_train, "Perceptrón multicapa", train_general, test_general)
+```
+
+```{r}
+validation(nnet_train, "Perceptrón multicapa", train_general, test_general)
+```
+
+```{r}
+resumen_nnet <- resumen(nnet_train, train_general, test_general)
+```
+
+```{r}
+resumen_nnet %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Red Neuronal. Perceptrón Multicapa " = 7))
+```
+
+```{r}
+importancia_var(nnet_train, "Perceptrón multicapa")
+```
+
+### 2.3.4. Árbol C5.0
+
+```{r}
+# Entrenamiento
+ if (train_switch  == 1) {
+set.seed(7)
+
+tic()
+  
+  clusterCPU <- makePSOCKcluster(detectCores() - 1)
+  registerDoParallel(clusterCPU)
+  
+
+  grid_c50 <- expand.grid(winnow = c(T, F),
+                        trials = c(1, 5, 10, 15, 20),
+                        model = 'tree')
+  
+  tic()
+  C5_train <- train(y~.,                                                  
+                  data = train_general,
+                  method = 'C5.0',
+                  metric = metrica,
+                  #preProc = c('center', 'scale'),
+                  trControl = control,
+                  tuneLength = 10,
+                  tuneGrid = grid_c50)
+ 
+  stopCluster(clusterCPU)
+  clusterCPU <- NULL
+
+  saveRDS(C5_train, "Models/C5_train.RDS")
+
+toc()
+
+}else{
+  C5_train <- readRDS("Models/C5_train.RDS")
+}
+```
+
+```{r}
+C5_train
+```
+
+```{r}
+grafico_metricas(C5_train)
+```
+
+```{r}
+resultados(C5_train, "Árbol C5")
+```
+
+```{r}
+mejor_modelo(C5_train)
+```
+
+```{r}
+curvas_ROC(C5_train, "de Árbol C5", train_general, test_general)
+```
+
+```{r}
+validation(C5_train, "de Árbol C5", train_general, test_general)
+```
+
+```{r}
+resumen_C5 <- resumen(C5_train, train_general, test_general)
+```
+
+```{r}
+resumen_C5 %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Árbol C5 " = 7))
+```
+
+```{r}
+importancia_var(C5_train, "de Árbol C5")
+```
+
+### 2.3.5. Regresión logística
+
+```{r}
+# Nota:
+# El entrenamiento de este modelo (rl_train) no se exporta correctamente.
+# Al cargarlo de una sesión anterior, produce fallos en varios apartados.
+# Es conveniente ejecutar este entrenamiento SIEMPRE en cada sesión o renderizado. 
+
+# Entrenamiento
+if (is.numeric(train_switch)) {
+set.seed(7)
+
+tic()
+
+grid_lmt <- expand.grid(iter = c(10, 15, 20, 25, 30, 50, 100))
+  
+clusterCPU <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(clusterCPU)
+  
+rl_train <- train(y~.,
+                  data = train_general,
+                  method = 'LMT',
+                  metric = metrica, 
+                  tuneGrid = grid_lmt,
+                  trControl = control)
+  
+stopCluster(clusterCPU)
+clusterCPU <- NULL
+
+saveRDS(rl_train, "Models/rl_train.RDS")
+
+toc()
+
+} else {
+  rl_train <- readRDS("Models/rl_train.RDS")
+}
+```
+
+```{r}
+rl_train
+```
+
+```{r}
+grafico_metricas(rl_train)
+```
+
+```{r}
+resultados(rl_train , "Regresión Logística")
+```
+
+```{r}
+mejor_modelo(rl_train)
+```
+
+```{r}
+curvas_ROC(rl_train, "de Regresión Logística", train_general, test_general)
+# Nota: Se producirá un Error in .jcall("RWekaInterfaces" si se carga un rl_train previo
+```
+
+```{r}
+validation(rl_train, "de Regresión Logística", train_general, test_general)
+# Nota: Se producirá un Error in .jcall("RWekaInterfaces" si se carga un rl_train previo
+```
+
+```{r}
+resumen_rl <- resumen(rl_train, train_general, test_general)
+# Nota: Se producirá un Error in .jcall("RWekaInterfaces" si se carga un rl_train previo
+```
+
+```{r}
+resumen_rl %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Naïve Bayes Classifier" = 7))
+```
+
+```{r}
+importancia_var(rl_train, "de Regresión logística ")
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 3. Comparación de los modelos
+
+## 3.1. Importancia de las variables
+
+```{r fig.height=10, fig.width=10}
+ggarrange(importancia_var(aode_train, "de AODE"),
+          importancia_var(XGBFinal_train, "de Extreme Gradient Boosting"),
+          importancia_var(rf_train, "de Random Forest"),
+          importancia_var(nnet_train, "de Red Neuronal"),
+          importancia_var(C5_train, "de C5"),
+          importancia_var(rl_train, "de Regresión logística"),
+          ncol=2,nrow=3)
+```
+
+## 3.2. Desempeño de los modelos
+
+```{r}
+# Los dos cuadros con los algoritmos utilizados los construimos uniendo la salida de la función resumen
+Nombresmodelos <- c("NB", "TAN", "TANSE", "TANHC", "AODE", "GBM", "XGB", "RF", "SVM", "MLP","C5","RL")
+
+# Para los datos de entrenamiento
+DatosEntrenamiento <- rbind(resumen_nb[1,], resumen_tan[1,], resumen_tanse[1,], resumen_tanhc[1,], resumen_AODE[1,], resumen_GBM[1,], resumen_XGBFinal[1,], resumen_rf[1,], resumen_svm[1,], resumen_nnet[1,], resumen_C5[1,], resumen_rl[1,])
+
+rownames(DatosEntrenamiento) <- Nombresmodelos
+
+DatosEntrenamiento <- as.data.frame(DatosEntrenamiento)
+
+DatosEntrenamiento %>% arrange(-AUC) %>% 
+    mutate(AUC = color_tile("white", "orange")(AUC),
+    Accuracy = color_tile("white", "pink")(Accuracy),
+    
+    Kappa = color_tile("white", "pink")(Kappa),
+    
+    Sensitivity = color_tile("white", "purple")(Sensitivity),
+    
+    Specificity = color_tile("white", "green")(Specificity)
+    
+  ) %>%
+  kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Comparación con la Muestra de Entrenamiento" = 7))
+```
+
+```{r}
+# Para los datos de validación
+DatosValidación <- rbind(resumen_nb[2,], resumen_tan[2,], resumen_tanse[2,], resumen_tanhc[2,], resumen_AODE[2,], resumen_GBM[2,], resumen_XGBFinal[2,], resumen_rf[2,], resumen_svm[2,], resumen_nnet[2,], resumen_C5[2,], resumen_rl[2,])
+
+rownames(DatosValidación) <- Nombresmodelos
+DatosValidación <-as.data.frame(DatosValidación)
+
+DatosValidación %>% arrange(-AUC) %>% 
+    mutate(AUC = color_tile("white", "orange")(AUC),
+    Accuracy = color_tile("white", "pink")(Accuracy),
+   
+    Kappa = color_tile("white", "pink")(Kappa),
+    
+    Sensitivity = color_tile("white", "purple")(Sensitivity),
+    
+    Specificity = color_tile("white", "green")(Specificity)
+    
+  ) %>%
+  kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Comparación con la Muestra de Validacion" = 7))
+```
+
+## 3.3. Contraste de hipótesis
+
+```{r}
+modelos <- list(RL= rl_train,NB = nb_train, TAN = tan_train, TANSE = tanse_train, TANHC = tanhc_train, AODE= aode_train, GBM = GBM_train, XGBTree = XGBFinal_train, RF = rf_train,  MLP = nnet_train, SVM = svm_train, C5 = C5_train)
+
+comp_modelos <- resamples(modelos)
+comp_modelos
+
+summary(comp_modelos)
+```
+
+```{r}
+dotplot(comp_modelos)
+```
+
+```{r}
+densityplot(comp_modelos, metric = "Kappa" ,auto.key = list(columns = 3))
+```
+
+```{r}
+diferencias <- diff(comp_modelos)
+summary(diferencias)
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+# 4. Interpretabilidad
+
+Para simplificar la comparación de modelos, vamos a comparar los modelos más representativos del análisis:
+
+· AODE
+
+· Extreme Gradient Boosting (XGB)
+
+· Random Forest (RF)
+
+· Regresión logística
+
+```{r}
+# Creamos el explicador de AODE
+explainer_AODE <- DALEX::explain(
+  model = aode_train,
+  data = test_factor,
+  y= test_factor$y=="Yes",
+  label   = "AODE",
+  type = "classification",
+  verbose = FALSE)
+
+# Creamos el explicador de XGB
+explainer_XGB <- DALEX::explain(
+  model = XGBFinal_train,
+  data = test_num,
+  y= test_num$y=="Yes",
+  label   = "XGB",
+  type = "classification",
+  verbose = FALSE)
+
+# Creamos el explicador de Random Forest
+explainer_rf <- DALEX::explain(
+  model = rf_train,
+  data = test_general,
+  y= test_general$y=="Yes",
+  label   = "RF",
+  type = "classification",
+  verbose = FALSE)
+
+# Creamos el explicador de RL
+explainer_rl <- DALEX::explain(
+  model = rl_train,
+  data = test_general,
+  y= test_general$y=="Yes",
+  label   = "RL",
+  type = "classification",
+  verbose = FALSE)
+```
+
+```{r}
+# Comparativa de curvas ROC
+plot(model_performance(explainer_AODE),
+     model_performance(explainer_XGB),
+     model_performance(explainer_rf),
+     model_performance(explainer_rl),
+     geom = "roc"
+     )
+
+# Nota: Se producirá un error con el explainer_rl si se carga un rl_train previo (en vez ejecutarlo en esta sesión)
+```
+
+## 4.1. Comparativa de residuos
+
+```{r}
+# Comparativa de histogramas de residuos
+plot(model_performance(explainer_AODE),
+     model_performance(explainer_XGB),
+     model_performance(explainer_rf),
+     model_performance(explainer_rl),
+     geom = "histogram"
+     )
+```
+
+
+```{r}
+# Distribución acumulativa de los residuos
+plot(model_performance(explainer_AODE),
+     model_performance(explainer_XGB),
+     model_performance(explainer_rf),
+     model_performance(explainer_rl)
+     )
+```
+
+```{r}
+# En formato de boxplots
+plot(model_performance(explainer_AODE),
+     model_performance(explainer_XGB),
+     model_performance(explainer_rf),
+     model_performance(explainer_rl),
+     geom = "boxplot"
+     )
+```
+
+## 4.2. Importancia de las variables
+
+```{r}
+# Generamos gráficos de importancia en base al Root Mean Square Error (RMSE)
+plot(model_parts(explainer_AODE, type = "raw"),
+     model_parts(explainer_XGB, type = "raw"),
+     model_parts(explainer_rf, type = "raw"),
+     model_parts(explainer_rl, type = "raw")
+     )
+```
+
+```{r}
+# Generamos gráficos de importancia en base al Root Mean Square Error (RMSE)
+plot(model_parts(explainer_AODE, loss_function = loss_root_mean_square),
+     model_parts(explainer_XGB, loss_function = loss_root_mean_square),
+     model_parts(explainer_rf, loss_function = loss_root_mean_square),
+     model_parts(explainer_rl, loss_function = loss_root_mean_square)
+     )
+```
+
+## 4.3. Partial Dependence Plot
+
+```{r}
+# Gráfico de dependencia parcial de los modelos AODE, Random Forset y Regresión logística
+plot(model_profile(explainer_AODE, variables = "vessel_class", type="partial"),
+     model_profile(explainer_rf, variables = "vessel_class", type="partial"),
+     model_profile(explainer_rl, variables = "vessel_class", type="partial")
+     )
+```
+
+## 4.4. Accumulated Local Effects plot
+
+```{r}
+# Gráfico de dependencia acumulada de los modelos AODE, Random Forset y Regresión logística
+plot(model_profile(explainer_AODE, variables = "vessel_class", type="accumulated"),
+     model_profile(explainer_rf, variables = "vessel_class", type="accumulated"),
+     model_profile(explainer_rl, variables = "vessel_class", type="accumulated")
+     )
+```
+
+## 4.5. Explicabilidad local - Criterio SHAP
+
+Para variables factoriales, podemos analizar la importancia de cada variable en predicciones específicas usando el paquete iBreakDown. Seleccionando un registro al azar, calculamos la contribución de cada variable, destacando su impacto positivo (verde) o negativo (rojo) en la predicción. Este enfoque permite una comprensión detallada de la explicatividad a nivel local.
+
+```{r}
+set.seed(7)
+vessel_sample <- train_factor %>%
+  select(-y) %>%
+  slice_sample(n=1)
+
+shap_AODE <- shap(explainer_AODE, vessel_sample)
+
+bd_AODE <- break_down(explainer_AODE, vessel_sample, keep_distributions = TRUE)
+```
+
+```{r}
+plot(shap_AODE)
+```
+
+```{r}
+plot(bd_AODE)
+```
+
+## 4.6. Explicatibilidad interactiva
+
+```{r eval=FALSE, include=FALSE}
+modelStudio(explainer_rf)
+```
+
+<br>
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<hr style="border: 1px solid #2fa4e7;">
+
+<br>
+
+
+
+
+
+
+
+
+
+
