@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Main Page</title>
+    <style>
+        body {
+            font-family: 'Roboto', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f0f2f5;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start; /* Align content to the top */
+            height: 100vh;
+            overflow: auto; /* Allow scrolling if necessary */
+        }
+        .container {
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            max-width: 800px;
+            width: 100%;
+            text-align: left;
+            margin-top: 20px; /* Adjust top margin to create space from the top of the viewport */
+        }
+        h1 {
+            font-size: 28px;
+            margin-bottom: 15px;
+            color: #1a73e8;
+            text-align: center;
+        }
+        p {
+            font-size: 16px;
+            color: #666666;
+            line-height: 1.6;
+            margin-bottom: 20px;
+        }
+        ul {
+            font-size: 16px;
+            color: #666666;
+            line-height: 1.6;
+            margin-bottom: 20px;
+            padding-left: 20px;
+        }
+        li {
+            margin-bottom: 10px;
+        }
+        .link-container {
+            margin-top: 20px;
+        }
+        .link {
+            display: block;
+            margin-bottom: 15px;
+            text-decoration: none;
+            color: #1a73e8;
+            font-size: 18px;
+            font-weight: 700;
+            transition: color 0.3s;
+        }
+        .link:hover {
+            color: #1558b0;
+            text-decoration: underline;
+        }
+        .link-description {
+            font-size: 14px;
+            color: #666666;
+            margin: 5px 0 15px 0;
+        }
+        .highlight {
+            background-color: #e7f0ff;
+            border-left: 5px solid #1a73e8;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        .note {
+            font-size: 14px;
+            color: #999999;
+            background-color: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 20px;
+        }
+        .note a {
+            color: #1a73e8;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .note a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Vessel Incident Prediction System</h1>
+        <p>Welcome to the Vessel Incident Prediction System. Following tools use Random Forest models to forecast both the probability and type of vessel incidents.</p>
+
+        <div class="highlight">
+            <p><strong>Data Sources:</strong> This project's models were trained on naval incident data from the US Coast Guard (USCG) covering the years 2002 to 2015, alongside meteorological data from the National Oceanic and Atmospheric Administration (NOAA).</p>
+            <p><strong>Development process summary:</strong></p>
+            <ul>
+                <li><strong>Data Mining:</strong> Gathered data from USCG and NOAA public websites.</li>
+                <li><strong>Data Cleaning and Preprocessing:</strong> Ensured accuracy and completeness of the data.</li>
+                <li><strong>Exploratory Data Analysis:</strong> Conducted EDA to understand the data and select the appropriate models.</li>
+                <li><strong>Model Training and Comparison:</strong> Trained various machine learning models and compared their performance. Random Forest was chosen for its robust performance and ease of interpretation.</li>
+                <li><strong>Deployment:</strong> Used FastAPI and Unicorn for a local example, providing efficient data handling and reliable performance. Created forms for single and multiple boat data entry to facilitate predictions.</li>
+            </ul>
+        </div>
+
+        <p>Explore the forms below to see how the system predicts incident involvement and incident type probability:</p>
+
+        <div class="link-container">
+            <li><strong>Can a particular vessel be involved in any incident?</strong></li>
+
+            <a class="link" href="client_FastAPI_webform(Single Query).html" target="_blank">Incident involvement prediction (Simple Query Form)</a>
+            <p class="link-description">Enter data for one vessel to predict the probability of any incident.</p>
+
+            <a class="link" href="client_FastAPI_webform(Multiple Queries).html" target="_blank">Incident involvement prediction (Multiple Query Form)</a>
+            <p class="link-description">Submit data for multiple vessels to predict the probability of any incident.</p>
+
+            <li><strong>What type of incident can a vessel be exposed to?</strong></li>
+
+            <a class="link" href="client_FastAPI_webform(Single Query)_MA.html" target="_blank">Incident type prediction (Simple Query Form)</a>
+            <p class="link-description">Enter data for one vessel to predict the probability of particular types of incidents.</p>
+
+            <a class="link" href="client_FastAPI_webform(Multiple Queries)_MA.html" target="_blank">Incident type prediction (Multiple Query Form)</a>
+            <p class="link-description">Submit data for multiple vessels to predict the probability of particular types of incidents.</p>
+        </div>
+
+        <div class="note">
+            <p><strong>Note:</strong> Please ensure that both server scripts are running for the forms to function properly.</p>
+        </div>
+
+        <div class="note">
+            <p><strong>Documentation available at:</strong> <a href="https://github.com/oscanton/MachineLearning-Naval-Incidents" target="_blank">github repository</a></p>
+        </div>
+
+        <div class="note">
+            <p><strong>Contact Information:</strong></p>
+            <p>Email: <a href="mailto:oscanton@gmail.com">oscanton@gmail.com</a></p>
+            <p>LinkedIn: <a href="https://www.linkedin.com/in/oscanton/" target="_blank">linkedin.com/in/oscanton/</a></p>
+        </div>
+
+    </div>
+</body>
+</html>
+

@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Incident Type Prediction (Multiple Queries)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f9;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #1a73e8;;
+        }
+        form {
+            display: flex;
+            flex-direction: column;
+        }
+        .form-group {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        label {
+            width: 200px;  /* Adjust the width as needed */
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button[type="submit"] {
+            width: 100%;
+            padding: 14px;  /* Increased padding for a taller button */
+            background-color: #007BFF;  /* Adjust the background color as needed */
+            color: white;
+            border: none;
+            border-radius: 5px;  /* Optional: rounded corners */
+            font-size: 18px;  /* Increased font size */
+            cursor: pointer;
+            box-sizing: border-box;
+            transition: background-color 0.3s ease;
+        }
+        button[type="submit"]:hover {
+            background-color: #0056b3;  /* Darker background color on hover */
+        }
+        .comma-separated-note {
+            margin-bottom: 20px;
+            font-size: 1em;
+            color: #666;
+            text-align: center;
+        }
+        .response {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            background-color: #f9f9f9;
+            border-radius: 4px;
+        }
+        .response .probability {
+            font-weight: bold;
+            color: #333;
+        }
+        .response .error {
+            color: red;
+            font-weight: bold;
+        }
+        .response ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        .response li {
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f4f4f9;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Incident type Prediction</h1>
+        <p class="comma-separated-note">For multiple queries, please enter values separated by commas.</p>
+        <form id="prediction-form">
+
+            <div class="form-group">
+                <label for="vessel_class">Vessel Class:</label>
+                <input type="text" id="vessel_class" name="vessel_class" required>
+            </div>
+
+            <div class="form-group">
+                <label for="age">Age:</label>
+                <input type="text" id="age" name="age" required>
+            </div>
+
+            <div class="form-group">
+                <label for="damage_status">Damage Status:</label>
+                <input type="text" id="damage_status" name="damage_status" required>
+            </div>
+
+            <div class="form-group">
+                <label for="gross_ton">Gross Ton:</label>
+                <input type="text" id="gross_ton" name="gross_ton" required>
+            </div>
+
+            <div class="form-group">
+                <label for="vessel_length">Vessel Length:</label>
+                <input type="text" id="vessel_length" name="vessel_length" required>
+            </div>
+
+            <div class="form-group">
+                <label for="watertype">Watertype:</label>
+                <input type="text" id="watertype" name="watertype" required>
+            </div>
+
+            <div class="form-group">
+                <label for="region">Region:</label>
+                <input type="text" id="region" name="region" required>
+            </div>
+
+            <div class="form-group">
+                <label for="longitude">Longitude (coord):</label>
+                <input type="text" id="longitude" name="longitude" required>
+            </div>
+
+            <div class="form-group">
+                <label for="air_temp">Air Temp:</label>
+                <input type="text" id="air_temp" name="air_temp" required>
+            </div>
+
+            <div class="form-group">
+                <label for="wind_speed">Wind Speed:</label>
+                <input type="text" id="wind_speed" name="wind_speed" required>
+            </div>
+
+            <div class="form-group">
+                <label for="hour">Hour:</label>
+                <input type="text" id="hour" name="hour" required>
+            </div>
+
+            <!--
+            <div class="form-group">
+                <label for="activity_id">Activity ID:</label>
+                <input type="text" id="activity_id" name="activity_id" required>
+            </div>
+            -->
+
+            <button type="submit">Submit</button>
+        </form>
+
+        <div id="response" class="response"></div>
+    </div>
+
+    <script>
+        document.getElementById('prediction-form').addEventListener('submit', function(event) {
+            event.preventDefault();
+    
+            // Collect form data
+            const formData = {
+                region: document.getElementById('region').value.split(',').map(item => item.trim()),
+                watertype: document.getElementById('watertype').value.split(',').map(item => item.trim()),
+                damage_status: document.getElementById('damage_status').value.split(',').map(item => item.trim()),
+                vessel_class: document.getElementById('vessel_class').value.split(',').map(item => item.trim()),
+                /*activity_id: document.getElementById('activity_id').value.split(',').map(item => parseInt(item.trim())),*/
+                hour: document.getElementById('hour').value.split(',').map(item => item.trim()),
+                longitude: document.getElementById('longitude').value.split(',').map(item => parseFloat(item.trim())),
+                age: document.getElementById('age').value.split(',').map(item => parseInt(item.trim())),
+                gross_ton: document.getElementById('gross_ton').value.split(',').map(item => parseFloat(item.trim())),
+                vessel_length: document.getElementById('vessel_length').value.split(',').map(item => parseFloat(item.trim())),
+                air_temp: document.getElementById('air_temp').value.split(',').map(item => parseFloat(item.trim())),
+                wind_speed: document.getElementById('wind_speed').value.split(',').map(item => parseFloat(item.trim()))
+            };
+    
+            fetch('http://127.0.0.2:8000/predict', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(formData)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log(data);  // Debugging line
+                const responseDiv = document.getElementById('response');
+    
+                if (typeof data === 'string') {     // in case of error message from predictor
+                    responseDiv.innerHTML = `<p>${data}</p>`;
+                } else {
+                    let tableHtml = '<table><tr><th>Vessel</th>';
+    
+                    // Get all the keys for the table headers
+                    const keys = Object.keys(data);
+                    keys.forEach(key => {
+                        tableHtml += `<th>${key}</th>`;
+                    });
+                    tableHtml += '</tr>';
+    
+                    // Assuming all arrays are of the same length
+                    const numRows = data[keys[0]].length;
+    
+                    // Generate table rows
+                    for (let i = 0; i < numRows; i++) {
+                        tableHtml += `<tr><td>Vessel ${i + 1}</td>`;
+                        keys.forEach(key => {
+                            tableHtml += `<td>${data[key][i]}</td>`;
+                        });
+                        tableHtml += '</tr>';
+                    }
+    
+                    tableHtml += '</table>';
+                    responseDiv.innerHTML = tableHtml;
+                }
+            })
+            .catch(error => {
+                document.getElementById('response').innerHTML = `<p class="error">Error: ${error.message}</p>`;
+            });
+        });
+    </script>
+</body>
+</html>

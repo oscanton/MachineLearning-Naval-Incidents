@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Incident Involvement Prediction (Single Query)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f9;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #1a73e8;;
+        }
+        form {
+            display: flex;
+            flex-direction: column;
+        }
+        .form-group {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        label {
+            width: 200px;  /* Adjust the width as needed */
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        input[type="text"], input[type="number"], select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button[type="submit"] {
+            width: 100%;
+            padding: 14px;  /* Increased padding for a taller button */
+            background-color: #007BFF;  /* Adjust the background color as needed */
+            color: white;
+            border: none;
+            border-radius: 5px;  /* Optional: rounded corners */
+            font-size: 18px;  /* Increased font size */
+            cursor: pointer;
+            box-sizing: border-box;
+            transition: background-color 0.3s ease;
+        }
+        button[type="submit"]:hover {
+            background-color: #0056b3;  /* Darker background color on hover */
+        }
+        .comma-separated-note {
+            margin-bottom: 20px;
+            font-size: 1em;
+            color: #666;
+            text-align: center;
+        }
+        .response {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            background-color: #f9f9f9;
+            border-radius: 4px;
+        }
+        .response .probability {
+            font-weight: bold;
+            color: #333;
+        }
+        .response .error {
+            color: red;
+            font-weight: bold;
+        }
+        .response ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        .response li {
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Incident Involvement Prediction</h1>
+        <p class="comma-separated-note">Single query: Select or enter values for a vessel.</p>
+        <form id="prediction-form">
+            <div class="form-group">
+                <label for="vessel_class">Vessel Class:</label>
+                <select id="vessel_class" name="vessel_class" required>
+                    <option value="">Select a value</option>
+                    <option value="Barge">Barge</option>
+                    <option value="Bulk Carrier">Bulk Carrier</option>
+                    <option value="Fishing Vessel">Fishing Vessel</option>
+                    <option value="General Dry Cargo Ship">General Dry Cargo Ship</option>
+                    <option value="Miscellaneous Vessel">Miscellaneous Vessel</option>
+                    <option value="Offshore">Offshore</option>
+                    <option value="Passenger Ship">Passenger Ship</option>
+                    <option value="Recreational">Recreational</option>
+                    <option value="Tank Ship">Tank Ship</option>
+                    <option value="Towing Vessel">Towing Vessel</option>
+                    <option value="other value">Other</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="build_year">Build Year:</label>
+                <input type="text" id="build_year" name="build_year" required>
+            </div>
+
+            <div class="form-group">
+                <label for="flag_abbr">Flag Abbr:</label>
+                <select id="flag_abbr" name="flag_abbr" required>
+                    <option value="">Select a value</option>
+                    <option value="CA">CA</option>
+                    <option value="LR">LR</option>
+                    <option value="PA">PA</option>
+                    <option value="US">US</option>
+                    <option value="other value">Other</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="classification_society">Classification Society:</label>
+                <select id="classification_society" name="classification_society" required>
+                    <option value="">Select a value</option>
+                    <option value="AMERICAN BUREAU OF SHIPPING">American Bureau of Shipping</option>
+                    <option value="DET NORSKE VERITAS">Det Norske Veritas</option>
+                    <option value="LLOYD'S REGISTER OF SHIPPING">Lloyd's Register of Shipping</option>
+                    <option value="NIPPON KAIJI KYOKAI">Nippon Kaiji Kyokai</option>
+                    <option value="UNSPECIFIED">UNSPECIFIED</option>
+                    <option value="other value">Other</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="solas_desc">SOLAS Description:</label>
+                <select id="solas_desc" name="solas_desc" required>
+                    <option value="">Select a value</option>
+                    <option value="Active SOLAS">Active SOLAS</option>
+                    <option value="Historical SOLAS">Historical SOLAS</option>
+                    <option value="Non SOLAS">Non SOLAS</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="gross_ton">Gross Ton:</label>
+                <input type="text" id="gross_ton" name="gross_ton" required>
+            </div>
+
+            <div class="form-group">
+                <label for="vessel_length">Vessel Length:</label>
+                <input type="text" id="vessel_length" name="vessel_length" required>
+            </div>
+
+            <button type="submit">Submit</button>
+        </form>
+
+        <div id="response" class="response"></div>
+    </div>
+
+    <script>
+        document.getElementById('prediction-form').addEventListener('submit', function(event) {
+            event.preventDefault();
+
+            // Collect form data
+            const formData = {
+                vessel_class: document.getElementById('vessel_class').value.split(',').map(item => item.trim()),
+                build_year: document.getElementById('build_year').value.split(',').map(item => parseInt(item.trim())),
+                flag_abbr: document.getElementById('flag_abbr').value.split(',').map(item => item.trim()),
+                classification_society: document.getElementById('classification_society').value.split(',').map(item => item.trim()),
+                solas_desc: document.getElementById('solas_desc').value.split(',').map(item => item.trim()),
+                gross_ton: document.getElementById('gross_ton').value.split(',').map(item => parseFloat(item.trim())),
+                vessel_length: document.getElementById('vessel_length').value.split(',').map(item => parseFloat(item.trim()))
+            };
+
+            fetch('http://localhost:8000/predict', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(formData)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log(data);  // Debugging line
+                let responseHtml = '<h3>Incident involvement probability:</h3><ul>';
+
+                for (const [key, value] of Object.entries(data)) {
+                    responseHtml += `<li><strong>${key}:</strong> ${value}</li>`;
+                }
+                responseHtml += '</ul>';
+
+                document.getElementById('response').innerHTML = responseHtml;
+            })
+            .catch(error => {
+                document.getElementById('response').innerHTML = `<p class="error">Error: ${error.message}</p>`;
+            });
+        });
+    </script>
+</body>
+</html>
